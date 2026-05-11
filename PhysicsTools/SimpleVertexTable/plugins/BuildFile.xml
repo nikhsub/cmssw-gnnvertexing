@@ -1,0 +1,55 @@
+
+<use   name="FWCore/Framework"/>
+<use   name="FWCore/ParameterSet"/>
+<use   name="DataFormats/VertexReco"/>
+<use   name="DataFormats/NanoAOD"/>
+<use   name="CommonTools/Utils"/>
+
+
+<use name="FWCore/ServiceRegistry"/>
+<use name="FWCore/Utilities"/>
+<use name="DataFormats/Candidate"/>
+<use name="DataFormats/PatCandidates"/>
+<use name="PhysicsTools/PatAlgos"/>
+<use name="roothistmatrix"/>
+<use name="RecoVertex/VertexTools"/>
+<use name="RecoVertex/VertexPrimitives"/>
+<use name="DataFormats/L1TGlobal"/>
+<use name="IOPool/Provenance"/>
+<use name="DQMServices/Core"/>
+<use name="CondFormats/BTauObjects"/>
+<use name="CondFormats/L1TObjects"/>
+<use name="CondTools/BTau"/>
+<use name="DataFormats/CTPPSDetId"/>
+<use name="DataFormats/CTPPSReco"/>
+<use name="DataFormats/ProtonReco"/>
+<use name="CondFormats/RunInfo"/>
+<use name="CondFormats/DataRecord"/>
+<use name="fastjet"/>
+<use name="fastjet-contrib"/>
+<use name="FWCore/PluginManager"/>
+<use name="DataFormats/Common"/>
+<use name="DataFormats/METReco"/>
+<use name="DataFormats/Math"/>
+<use name="DataFormats/BTauReco"/>
+<use name="SimDataFormats/GeneratorProducts"/>
+<use name="SimDataFormats/PileupSummaryInfo"/>
+<use name="CommonTools/UtilAlgos"/>
+<use name="HLTrigger/HLTcore"/>
+<use name="RecoBTag/FeatureTools"/>
+<use name="TrackingTools/Records"/>
+<use name="GeneratorInterface/Pythia8Interface"/>
+<use name="GeneratorInterface/ExternalDecays"/>
+<use name="RecoBTag/ONNXRuntime"/>
+<use name="hepmc"/>
+<use name="pythia8"/>
+<use name="boost"/>
+<use name="correctionlib"/>
+<use name="PhysicsTools/ONNXRuntime"/>
+  <!-- add any other dependencies here -->
+<library file="*.cc" name="PhysicsToolsSimpleVertexTablePlugins">
+  <flags EDM_PLUGIN="1"/>
+</library>
+  <!--<library file="*.h" name="PhysicsToolsSimpleVertexTableInterface">
+  <!  <flags EDM_PLUGIN="1"/>
+  <!</library>-->

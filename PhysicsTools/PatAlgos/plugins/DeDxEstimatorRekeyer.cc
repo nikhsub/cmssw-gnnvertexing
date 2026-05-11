@@ -5,7 +5,6 @@
 #include "DataFormats/TrackReco/interface/DeDxHitInfo.h"
 #include "DataFormats/TrackReco/interface/TrackFwd.h"
 #include "DataFormats/PatCandidates/interface/PackedCandidate.h"
-#include "DataFormats/Math/interface/libminifloat.h"
 
 //
 // class declaration
@@ -30,7 +29,6 @@ private:
 
   // ----------member data ---------------------------
   const edm::EDGetTokenT<reco::TrackCollection> tracksToken_;
-  const bool rekey_dedxHits_;
   const edm::EDGetTokenT<reco::DeDxHitInfoAss> dedxHitAssToken_;
   const edm::EDGetTokenT<edm::ValueMap<std::vector<float>>> dedxHitMomToken_;
   const std::map<std::string, edm::EDGetTokenT<edm::ValueMap<reco::DeDxData>>> dedxEstimatorsTokens_;
@@ -41,8 +39,8 @@ private:
 void DeDxEstimatorRekeyer::fillDescriptions(edm::ConfigurationDescriptions& descriptions) {
   edm::ParameterSetDescription desc;
   desc.add<edm::InputTag>("tracks", {"generalTracks"});
-  desc.add<edm::InputTag>("dedxHits", {});
-  desc.add<edm::InputTag>("dedxMomentum", {});
+  desc.add<edm::InputTag>("dedxHits", {"dedxHitInfo"});
+  desc.add<edm::InputTag>("dedxMomentum", {"dedxHitInfo:momentumAtHit"});
   desc.add<std::vector<edm::InputTag>>(
       "packedCandidates",
       {edm::InputTag("packedPFCandidates"), edm::InputTag("lostTracks"), edm::InputTag("lostTracks:eleTracks")});
@@ -53,7 +51,6 @@ void DeDxEstimatorRekeyer::fillDescriptions(edm::ConfigurationDescriptions& desc
 
 DeDxEstimatorRekeyer::DeDxEstimatorRekeyer(const edm::ParameterSet& iConfig)
     : tracksToken_(consumes<reco::TrackCollection>(iConfig.getParameter<edm::InputTag>("tracks"))),
-      rekey_dedxHits_(not iConfig.getParameter<edm::InputTag>("dedxHits").label().empty()),
       dedxHitAssToken_(consumes<reco::DeDxHitInfoAss>(iConfig.getParameter<edm::InputTag>("dedxHits"))),
       dedxHitMomToken_(
           consumes<edm::ValueMap<std::vector<float>>>(iConfig.getParameter<edm::InputTag>("dedxMomentum"))),
@@ -65,11 +62,9 @@ DeDxEstimatorRekeyer::DeDxEstimatorRekeyer(const edm::ParameterSet& iConfig)
           iConfig.getParameter<std::vector<edm::InputTag>>("packedCandidates"))) {
   for (const auto& d : dedxEstimatorsTokens_)
     produces<edm::ValueMap<reco::DeDxData>>(d.first);
-  if (rekey_dedxHits_) {
-    produces<reco::DeDxHitInfoCollection>();
-    produces<reco::DeDxHitInfoAss>();
-    produces<edm::ValueMap<std::vector<float>>>("momentumAtHit");
-  }
+  produces<reco::DeDxHitInfoCollection>();
+  produces<reco::DeDxHitInfoAss>();
+  produces<edm::ValueMap<std::vector<float>>>("momentumAtHit");
 }
 
 void DeDxEstimatorRekeyer::produce(edm::StreamID, edm::Event& iEvent, const edm::EventSetup& iSetup) const {
@@ -102,13 +97,8 @@ void DeDxEstimatorRekeyer::produce(edm::StreamID, edm::Event& iEvent, const edm:
     // Loop over packed candidates
     for (const auto& h : pcTrkMap) {
       std::vector<reco::DeDxData> dedxEstimate(h.first->size());
-      for (const auto& p : h.second) {
-        const auto& dedx = dedxEstimators[p.second];
-        const auto val = MiniFloatConverter::reduceMantissaToNbitsRounding<12>(dedx.dEdx());
-        const auto err = MiniFloatConverter::reduceMantissaToNbitsRounding<8>(dedx.dEdxError());
-        dedxEstimate[p.first.key()] =
-            reco::DeDxData(val, err, dedx.numberOfSaturatedMeasurements(), dedx.numberOfMeasurements());
-      }
+      for (const auto& p : h.second)
+        dedxEstimate[p.first.key()] = dedxEstimators[p.second];
       filler.insert(h.first, dedxEstimate.begin(), dedxEstimate.end());
     }
     // Fill the value map and put it into the event
@@ -117,8 +107,6 @@ void DeDxEstimatorRekeyer::produce(edm::StreamID, edm::Event& iEvent, const edm:
   }
 
   // Rekey dEdx hit info
-  if (not rekey_dedxHits_)
-    return;
   const auto& dedxHitMom = iEvent.get(dedxHitMomToken_);
   const auto& dedxHitAss = iEvent.get(dedxHitAssToken_);
   const auto& dedxHitInfoHandle = iEvent.getRefBeforePut<reco::DeDxHitInfoCollection>();

@@ -5,6 +5,8 @@ __init__.py
 #*#
 *~
 *.pb
+__pycache__/
+*.onnx
 
 # ignore partially applied patches and their backup
 *.rej

@@ -1,0 +1,3 @@
+<package name="SimpleVertexTable">
+  <class name="edm::PtrVector<reco::VertexCompositePtrCandidate>"/>
+</package>
