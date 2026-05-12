@@ -426,19 +426,26 @@ void DummyTrackValueMap::produce(edm::Event& iEvent,const edm::EventSetup &iSetu
 
     
     auto selectedTracks = std::make_unique<std::vector<reco::Track>>();
-    std::vector<float> selected_SVscores;  // keep SVscore for selected tracks
-    
-    for (size_t i = 0; i < tracks->size(); ++i) {
-        int ni = origToNode[i];
-    
-        if (ni < 0) {
-            selected_SVscores.push_back(-1.0f); // or default
-        } else {
+    std::vector<float> selected_SVscores;
+    std::vector<int> selected_globalTrackIdx;
+    std::vector<int> selected_originalTrackIdx;
 
-            selected_SVscores.push_back(softmax2_prob1(ni));
-            if (softmax2_prob1(ni) > threshold_) {
-            selectedTracks->push_back((*tracks)[i]);}
-        }
+    selected_SVscores.reserve(tracks->size());
+    selected_globalTrackIdx.reserve(tracks->size());
+    selected_originalTrackIdx.reserve(tracks->size());
+
+    for (size_t i = 0; i < tracks->size(); ++i) {
+        const int ni = origToNode[i];
+        if (ni < 0) continue;
+
+        const float score = softmax2_prob1(ni);
+        if (score <= threshold_) continue;
+
+        selectedTracks->push_back((*tracks)[i]);
+        selected_SVscores.push_back(score);
+        // Global index space is defined as the original unpacked-track index.
+        selected_globalTrackIdx.push_back(static_cast<int>(i));
+        selected_originalTrackIdx.push_back(static_cast<int>(i));
     }
 
 
@@ -456,10 +463,9 @@ void DummyTrackValueMap::produce(edm::Event& iEvent,const edm::EventSetup &iSetu
     iEvent.put(std::move(globalTrackIdxMap), "globalTrackIdxMap");
     // 3. Create a flat table with just one branch for SVscore
     auto table = std::make_unique<nanoaod::FlatTable>(static_cast<unsigned int>(selected_SVscores.size()), "selectedTracks", false);
-    
-    // Correct: no <float> here for vector
-    //table->addColumn("selectedTrack_SVscore", selected_SVscores, "SVscore for selected tracks", true);
     table->addColumn<float>("selectedTrack_SVscore", selected_SVscores, "selectedTrack_SVscore");
+    table->addColumn<int>("globalTrackIdx", selected_globalTrackIdx, "Index in upstream unpacked track collection (authoritative global index)");
+    table->addColumn<int>("originalTrackIdx", selected_originalTrackIdx, "Index in upstream unpacked track collection");
     
     iEvent.put(std::move(table), "selectedTrackTable");
 

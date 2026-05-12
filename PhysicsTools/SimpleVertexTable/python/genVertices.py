@@ -34,6 +34,15 @@ genVertexProducer = cms.EDProducer("GenVertexProducer",
     doubleMatching_relPt_max = cms.double(0.1)
 )
 
+svTruthTableProducer = cms.EDProducer("SVTruthTableProducer",
+    svTable = cms.InputTag("svTable", "SVTable"),
+    svTrkTable = cms.InputTag("svTable", "SVtrksTable"),
+    gvTable = cms.InputTag("gvProducer", "GVTable"),
+    gvDaughtersTable = cms.InputTag("gvProducer", "GVDaughtersTable"),
+    nRequiredCommonTracks = cms.int32(2),
+    dR_max = cms.double(0.03),
+    relPt_max = cms.double(0.2)
+)
 
 
 def custom_GV_producer(process, collection="candidate"):
@@ -44,10 +53,20 @@ def custom_GV_producer(process, collection="candidate"):
     elif collection=="track":
         print("Track collection is running")
         process.gvProducer = genVertexProducer
+        process.svTruthTable = svTruthTableProducer
         print(genVertexProducer)
-        process.genVertexProducer_sequence = cms.Sequence(process.gvProducer)
+        process.genVertexProducer_sequence = cms.Sequence(process.gvProducer*process.svTruthTable)
     elif collection=="central":
         print("Central collection is running")
         process.gvCentralProducer = genCentralVertexProducer
         process.genVertexProducer_sequence = cms.Sequence(process.gvCentralProducer)
+    return process
+
+
+def add_sv_truth_output_commands(process):
+    keep_cmd = "keep *_svTruthTable_SVTruthTable_*"
+    if hasattr(process, "NANOAODEventContent"):
+        process.NANOAODEventContent.outputCommands.append(keep_cmd)
+    if hasattr(process, "NANOEDMAODEventContent"):
+        process.NANOEDMAODEventContent.outputCommands.append(keep_cmd)
     return process

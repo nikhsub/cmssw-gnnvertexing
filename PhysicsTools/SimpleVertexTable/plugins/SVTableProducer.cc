@@ -103,6 +103,8 @@ void SVTableProducer::produce(edm::StreamID,
 
         std::vector<int> nTracks;
         std::vector<int> trk_SVidx;
+        std::vector<int> trk_globalIdx;
+        std::vector<int> trk_localIdx_inSV;
 
         int nTrksPerSV = 0;
         //std::cout<<svs->size()<<" SVs to process\n";
@@ -132,6 +134,7 @@ void SVTableProducer::produce(edm::StreamID,
 
 
                 TLorentzVector p4s_SV;
+                int localIdxInSV = 0;
                 for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
                     const edm::RefToBase<reco::Track>& trkRef = *it;
                     if (trkRef.isNull()) continue;
@@ -153,6 +156,8 @@ void SVTableProducer::produce(edm::StreamID,
                     //    trk_SVscore.push_back(-1.0);
                     //}
                     trk_SVidx.push_back(x.size()-1);
+                    trk_localIdx_inSV.push_back(localIdxInSV);
+                    trk_globalIdx.push_back(static_cast<int>(trkRef.key()));
 
                     // for GNN model:
                     //trk_ip_z.push_back(trkRef->ip_z())
@@ -190,6 +195,7 @@ void SVTableProducer::produce(edm::StreamID,
                     trk_ip3d_sig.push_back(ip3d_val.significance());
 
                     p4s_SV += p4;
+                    ++localIdxInSV;
                 }
                 pt.push_back(p4s_SV.Pt());
                 eta.push_back(p4s_SV.Eta());
@@ -241,6 +247,8 @@ void SVTableProducer::produce(edm::StreamID,
 
 
         trk_table->addColumn<int>("trk_SVidx", trk_SVidx, "trk_SVidx");
+        trk_table->addColumn<int>("trk_localIdx_inSV", trk_localIdx_inSV, "Track index local to each SV (convenience only)");
+        trk_table->addColumn<int>("trk_globalIdx", trk_globalIdx, "Authoritative global index in upstream unpacked track collection");
 
         iEvent.put(std::move(table), "SVTable");
         iEvent.put(std::move(trk_table), "SVtrksTable");

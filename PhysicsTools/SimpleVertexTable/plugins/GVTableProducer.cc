@@ -272,7 +272,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         // new class
         gvTable->addColumn<int>("isB",Hadron_isB,"isB");
         gvTable->addColumn<int>("isD",Hadron_isD,"isD");
-        gvTable->addColumn<int>("pdgClass",Hadron_pdgId,"pdgClass");
+        gvTable->addColumn<int>("pdgClass",Hadron_pdgClass,"pdgClass");
         gvTable->addColumn<float>("minDistNotMatched",Hadron_minDistNotMatched,"Minimum distance to SV among unmatched hadrons");
         
         //
