@@ -83,6 +83,8 @@ void SVGraphFeatureProducer::produce(edm::StreamID, edm::Event& iEvent, const ed
         continue;
 
       const int globalIdx = (*globalIdxMap)[trkRef];
+      if (globalIdx < 0)
+        continue;
       const reco::Track* trk = trkRef.get();
       svTracks.emplace_back(globalIdx, trk);
 
