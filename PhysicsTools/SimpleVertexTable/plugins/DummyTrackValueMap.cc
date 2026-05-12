@@ -48,6 +48,7 @@ DummyTrackValueMap::DummyTrackValueMap(const edm::ParameterSet& iConfig, const O
     //produces<edm::ValueMap<float>>("SVscoreCfromB");
     produces<std::vector<reco::Track>>("selectedTracks");
     produces<nanoaod::FlatTable>("selectedTrackTable");
+    produces<edm::ValueMap<int>>("globalTrackIdxMap");
 }
 std::unique_ptr<ONNXRuntime> DummyTrackValueMap::initializeGlobalCache(const edm::ParameterSet &iConfig) 
 {
@@ -442,6 +443,17 @@ void DummyTrackValueMap::produce(edm::Event& iEvent,const edm::EventSetup &iSetu
 
 
     iEvent.put(std::move(selectedTracks), "selectedTracks");
+
+    auto globalTrackIdxMap = std::make_unique<edm::ValueMap<int>>();
+    edm::ValueMap<int>::Filler globalIdxFiller(*globalTrackIdxMap);
+    std::vector<int> rawTrackIndices(tracks->size(), -1);
+    for (size_t i = 0; i < tracks->size(); ++i) {
+        if (origToNode[i] < 0) continue;
+        rawTrackIndices[i] = static_cast<int>(i);
+    }
+    globalIdxFiller.insert(tracks, rawTrackIndices.begin(), rawTrackIndices.end());
+    globalIdxFiller.fill();
+    iEvent.put(std::move(globalTrackIdxMap), "globalTrackIdxMap");
     // 3. Create a flat table with just one branch for SVscore
     auto table = std::make_unique<nanoaod::FlatTable>(static_cast<unsigned int>(selected_SVscores.size()), "selectedTracks", false);
     
