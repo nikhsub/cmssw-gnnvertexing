@@ -49,6 +49,7 @@
 <use name="boost"/>
 <use name="correctionlib"/>
 <use name="PhysicsTools/ONNXRuntime"/>
+<flags CXXFLAGS="-fopenmp"/>
   <!-- add any other dependencies here -->
 <library file="*.cc" name="PhysicsToolsSimpleVertexTablePlugins">
   <flags EDM_PLUGIN="1"/>

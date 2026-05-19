@@ -119,7 +119,7 @@ public:
       }
     }
 
-    auto table = std::make_unique<nanoaod::FlatTable>(nSV, "SVTruth", false, true);
+    auto table = std::make_unique<nanoaod::FlatTable>(nSV, "SVTruth", false, false);
     table->addColumn<int>("svIdx", svIdx, "SV row index");
     table->addColumn<int>("truth_pdgClass", truthPdgClass, "Primary truth class label from matched GV");
     table->addColumn<int>("truth_pdgId", truthPdgId, "PDG id of best matched truth hadron");
