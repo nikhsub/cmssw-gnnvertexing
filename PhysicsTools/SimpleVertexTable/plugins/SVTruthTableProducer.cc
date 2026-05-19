@@ -36,6 +36,7 @@ public:
     const int idxPdgId = gvTable->columnIndex("Hadron_pdgId");
     const int idxIsB = gvTable->columnIndex("isB");
     const int idxIsD = gvTable->columnIndex("isD");
+    const int idxIsBtoD = gvTable->columnIndex("isBtoD");
 
     const int idxSvTrkPt = svTrkTable->columnIndex("trk_pt");
     const int idxSvTrkEta = svTrkTable->columnIndex("trk_eta");
@@ -52,7 +53,7 @@ public:
       throw cms::Exception("MissingColumn") << "SVTruthTableProducer is missing required columns from input FlatTables";
     }
 
-    std::vector<int> svIdx(nSV, -1), truthPdgClass(nSV, 0), truthPdgId(nSV, 0), truthIsB(nSV, 0), truthIsD(nSV, 0), nMatchedGV(nSV, 0);
+    std::vector<int> svIdx(nSV, -1), truthPdgClass(nSV, 0), truthPdgId(nSV, 0), truthIsB(nSV, 0), truthIsD(nSV, 0), truthIsBtoD(nSV, 0), nMatchedGV(nSV, 0);
     std::vector<float> bestMatchScore(nSV, -1.f);
 
     // Build per-SV track lists
@@ -115,6 +116,8 @@ public:
           truthIsB[isv] = static_cast<int>(gvTable->getAnyValue(bestGV, idxIsB));
         if (idxIsD >= 0)
           truthIsD[isv] = static_cast<int>(gvTable->getAnyValue(bestGV, idxIsD));
+        if (idxIsBtoD >= 0)
+          truthIsBtoD[isv] = static_cast<int>(gvTable->getAnyValue(bestGV, idxIsBtoD));
         bestMatchScore[isv] = bestScore;
       }
     }
@@ -125,6 +128,7 @@ public:
     table->addColumn<int>("truth_pdgId", truthPdgId, "PDG id of best matched truth hadron");
     table->addColumn<int>("truth_isB", truthIsB, "Best matched GV is B hadron");
     table->addColumn<int>("truth_isD", truthIsD, "Best matched GV is D hadron");
+    table->addColumn<int>("truth_isBtoD", truthIsBtoD, "Best matched GV is a D hadron with B-hadron ancestry");
     table->addColumn<int>("nMatchedGV", nMatchedGV, "Number of GV rows matched to this SV");
     table->addColumn<float>("bestMatchScore", bestMatchScore, "Best match score (track-sharing quality)");
     iEvent.put(std::move(table), "SVTruthTable");
