@@ -35,6 +35,7 @@ public:
 private:
 
     int checkPDG(int abs_pdg) const;
+    bool hasBHadronAncestor(const reco::Candidate* cand) const;
 
     std::optional<std::tuple<float, float, float>>isAncestor(const reco::Candidate* mother,const reco::Candidate* daughter) const;
 
@@ -115,7 +116,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         std::vector<float> Hadron_GVx, Hadron_GVy, Hadron_GVz;
         std::vector<float>  Hadron_GVx_i, Hadron_GVy_i, Hadron_GVz_i;
         std::vector<int> Hadron_pdgId;
-        std::vector<int> Hadron_pdgClass, Hadron_isB, Hadron_isD;
+        std::vector<int> Hadron_pdgClass, Hadron_isB, Hadron_isD, Hadron_isBtoD;
         std::vector<float> Daughters_pt, Daughters_eta, Daughters_phi;
         std::vector<int> Daughters_charge, Daughters_GVidx;
         VertexDistance3D vdist;
@@ -198,6 +199,11 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                 else{
                     Hadron_isD.push_back(0);
                 }
+                if(hadPDG==2) {
+                    Hadron_isBtoD.push_back(hasBHadronAncestor(hadron) ? 1 : 0);
+                } else {
+                    Hadron_isBtoD.push_back(0);
+                }
                 if(hadPDG==3) ngv_s++;
                 if(hadPDG==4) ngv_tau++;
                 Hadron_GVx.push_back(vx);               // point of decay of the hadron
@@ -272,6 +278,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         // new class
         gvTable->addColumn<int>("isB",Hadron_isB,"isB");
         gvTable->addColumn<int>("isD",Hadron_isD,"isD");
+        gvTable->addColumn<int>("isBtoD",Hadron_isBtoD,"isBtoD");
         gvTable->addColumn<int>("pdgClass",Hadron_pdgClass,"pdgClass");
         gvTable->addColumn<float>("minDistNotMatched",Hadron_minDistNotMatched,"Minimum distance to SV among unmatched hadrons");
         
@@ -314,6 +321,27 @@ int GenVertexProducer::checkPDG(int abs_pdg) const {
 }
 
 
+
+
+
+//  hasBHadronAncestor() 
+bool GenVertexProducer::hasBHadronAncestor(const reco::Candidate* cand) const {
+    if (cand == nullptr)
+        return false;
+
+    const reco::Candidate* current = cand;
+    while (current != nullptr && current->numberOfMothers() > 0) {
+        const reco::Candidate* mother = current->mother(0);
+        if (mother == nullptr || mother == current)
+            break;
+
+        if (checkPDG(std::abs(mother->pdgId())) == 1)
+            return true;
+
+        current = mother;
+    }
+    return false;
+}
 
 //  isAncestor() 
 std::optional<std::tuple<float, float, float>> GenVertexProducer::isAncestor(const reco::Candidate* ancestor, const reco::Candidate* particle) const
