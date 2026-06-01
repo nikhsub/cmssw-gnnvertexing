@@ -94,19 +94,36 @@ svTable = cms.EDProducer("SVTableProducer",
                         dlenSigMin = cms.double(3.0))
 
 
+svGraphGNNInference = cms.EDProducer("SVGraphGNNInferenceProducer",
+    src = cms.InputTag("myFinalInclusiveSecondaryVertices"),
+    pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
+    trackSrc = cms.InputTag("unpackedTracksAndVertices"),
+    model_path = cms.FileInPath("PhysicsTools/data/GraphVertexGNN.onnx"),
+    maxTracks = cms.uint32(16),
+    maxEdges = cms.uint32(128),
+    dlenSigMin = cms.double(3.0),
+    debug = cms.untracked.bool(False)
+)
+
+
 # Missing cut in dlen and dlenSig
 # Missing cut in dlen and dlenSig
 # Missing cut in dlen and dlenSig
 
 
 
-def custom_sv_tracks(process, threshold_value=0.0):
+def custom_sv_tracks(process, threshold_value=0.0,
+                     graph_gnn_model_path="PhysicsTools/data/GraphVertexGNN.onnx",
+                     enable_graph_gnn=True):
   process.unpackedTracksAndVertices = unpackedTracksAndVertices
   process.inclusiveVertexFinder = inclusiveVertexFinder
   process.vertexMerger = vertexMerger
   process.trackVertexArbitrator = trackVertexArbitrator
   process.myFinalInclusiveSecondaryVertices = myFinalInclusiveSecondaryVertices
   process.svTable = svTable
+  process.svGraphGNNInference = svGraphGNNInference.clone(
+        model_path = cms.FileInPath(graph_gnn_model_path)
+    )
   process.dummyValueMap = dummyValueMap.clone(
         threshold = cms.double(threshold_value)
     )
@@ -117,4 +134,6 @@ def custom_sv_tracks(process, threshold_value=0.0):
                                       process.trackVertexArbitrator*
                                       process.myFinalInclusiveSecondaryVertices*
                                       process.svTable)
+  if enable_graph_gnn:
+    process.sv_track += process.svGraphGNNInference
   return process
