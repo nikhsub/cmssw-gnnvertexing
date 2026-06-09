@@ -19,6 +19,8 @@
 #include <limits>
 #include <tuple>
 #include <cmath>
+#include <optional>
+#include <algorithm>
 
 #include "Math/SMatrix.h"
 #include "Math/SVector.h"
@@ -36,8 +38,14 @@ private:
 
     int checkPDG(int abs_pdg) const;
     bool hasBHadronAncestor(const reco::Candidate* cand) const;
-
-    std::optional<std::tuple<float, float, float>>isAncestor(const reco::Candidate* mother,const reco::Candidate* daughter) const;
+    
+    int getCollisionIdSafe(const reco::Candidate* cand) const;
+    int getDaughterOriginLabel(const reco::Candidate* dau) const;
+    
+    std::optional<std::tuple<float, float, float>> isAncestor(
+        const reco::Candidate* mother,
+        const reco::Candidate* daughter
+    ) const;
 
     std::vector<std::vector<float>> computeDistanceMatrix(
                     const std::vector<float>& SV_x,const std::vector<float>& SV_y,const std::vector<float>& SV_z,
@@ -117,8 +125,21 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         std::vector<float>  Hadron_GVx_i, Hadron_GVy_i, Hadron_GVz_i;
         std::vector<int> Hadron_pdgId;
         std::vector<int> Hadron_pdgClass, Hadron_isB, Hadron_isD, Hadron_isBtoD;
-        std::vector<float> Daughters_pt, Daughters_eta, Daughters_phi;
-        std::vector<int> Daughters_charge, Daughters_GVidx;
+	std::vector<float> Daughters_pt, Daughters_eta, Daughters_phi;
+	std::vector<int> Daughters_charge, Daughters_GVidx;
+	
+	// Daughter-level truth diagnostics
+	std::vector<int> Daughters_collisionId;
+	std::vector<int> Daughters_isPU;
+	std::vector<int> Daughters_originLabel;
+	
+	// GV-level PU summaries from selected daughters
+	std::vector<int> Hadron_nDauPU;
+	std::vector<int> Hadron_nDauPrimary;
+	std::vector<int> Hadron_nDauUnknown;
+	std::vector<float> Hadron_fracDauPU;
+	std::vector<int> Hadron_isPU_dominated;
+
         VertexDistance3D vdist;
         const auto& PV0 = pvsIn->front();
 
@@ -146,7 +167,12 @@ void GenVertexProducer::produce(edm::Event& iEvent,
 
             //  Collect stable charged daughters
             std::vector<float> temp_pt, temp_eta, temp_phi; // kinematics of gen daughters of the hadron in the loop
-            std::vector<int> temp_charge, temp_GVidx, temp_flav;
+            std::vector<int> temp_charge, temp_GVidx;
+            
+            // Daughter-level truth diagnostics
+            std::vector<int> temp_collisionId;
+            std::vector<int> temp_isPU;
+            std::vector<int> temp_originLabel;
             int nPack=0;
             float vx=std::numeric_limits<float>::quiet_NaN();
             float vy=std::numeric_limits<float>::quiet_NaN();
@@ -162,11 +188,19 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                     std::tie(vx,vy,vz) = *GV;
                     if(!std::isnan(vx)){
                         nPack++;
-                        temp_pt.push_back(dau->pt());
-                        temp_eta.push_back(dau->eta());
-                        temp_phi.push_back(dau->phi());
-                        temp_charge.push_back(dau->charge());
-                        temp_GVidx.push_back(ngv); // hadron index
+			const int collId = getCollisionIdSafe(dau);
+			const int isPU = (collId > 0 ? 1 : 0);
+			const int originLabel = getDaughterOriginLabel(dau);
+			
+			temp_pt.push_back(dau->pt());
+			temp_eta.push_back(dau->eta());
+			temp_phi.push_back(dau->phi());
+			temp_charge.push_back(dau->charge());
+			temp_GVidx.push_back(ngv); // hadron index
+			
+			temp_collisionId.push_back(collId);
+			temp_isPU.push_back(isPU);
+			temp_originLabel.push_back(originLabel);
                         //temp_flav.push_back(hadPDG);
                     }
                 }
@@ -181,8 +215,6 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                 Hadron_pdgId.push_back(hadron->pdgId());
                 Hadron_pdgClass.push_back(hadPDG);
                 
-                
-
                 // Save GenVertex
                 ngv++;
                 if(hadPDG==1) {
@@ -213,12 +245,40 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                 Hadron_GVy_i.push_back(hadron->vy());   // point of origin of the hadron
                 Hadron_GVz_i.push_back(hadron->vz());   // point of origin of the hadron
 
+		int nPU = 0;
+		int nPrimary = 0;
+		int nUnknown = 0;
+		
+		for (const int lab : temp_originLabel) {
+		    if (lab == 1) {
+		        ++nPU;
+		    } else if (lab == 9) {
+		        ++nUnknown;
+		    } else {
+		        ++nPrimary;
+		    }
+		}
+		
+		const float fracPU = temp_originLabel.empty()
+		    ? -1.f
+		    : static_cast<float>(nPU) / static_cast<float>(temp_originLabel.size());
+		
+		Hadron_nDauPU.push_back(nPU);
+		Hadron_nDauPrimary.push_back(nPrimary);
+		Hadron_nDauUnknown.push_back(nUnknown);
+		Hadron_fracDauPU.push_back(fracPU);
+		Hadron_isPU_dominated.push_back(fracPU > 0.5f ? 1 : 0);
+
                 // Save daughters
                 Daughters_pt.insert(Daughters_pt.end(), temp_pt.begin(), temp_pt.end());
                 Daughters_eta.insert(Daughters_eta.end(), temp_eta.begin(), temp_eta.end());
                 Daughters_phi.insert(Daughters_phi.end(), temp_phi.begin(), temp_phi.end());
                 Daughters_charge.insert(Daughters_charge.end(), temp_charge.begin(), temp_charge.end());
                 Daughters_GVidx.insert(Daughters_GVidx.end(), temp_GVidx.begin(), temp_GVidx.end());
+
+		Daughters_collisionId.insert(Daughters_collisionId.end(), temp_collisionId.begin(), temp_collisionId.end());
+		Daughters_isPU.insert(Daughters_isPU.end(), temp_isPU.begin(), temp_isPU.end());
+		Daughters_originLabel.insert(Daughters_originLabel.end(), temp_originLabel.begin(), temp_originLabel.end());
             }
         }
 
@@ -281,6 +341,12 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         gvTable->addColumn<int>("isBtoD",Hadron_isBtoD,"isBtoD");
         gvTable->addColumn<int>("pdgClass",Hadron_pdgClass,"pdgClass");
         gvTable->addColumn<float>("minDistNotMatched",Hadron_minDistNotMatched,"Minimum distance to SV among unmatched hadrons");
+
+	gvTable->addColumn<int>("nDauPU", Hadron_nDauPU, "Number of selected daughters from pileup collisionId > 0");
+	gvTable->addColumn<int>("nDauPrimary", Hadron_nDauPrimary, "Number of selected daughters not from pileup");
+	gvTable->addColumn<int>("nDauUnknown", Hadron_nDauUnknown, "Number of selected daughters with unavailable collisionId");
+	gvTable->addColumn<float>("fracDauPU", Hadron_fracDauPU, "Fraction of selected daughters from pileup");
+	gvTable->addColumn<int>("isPU_dominated", Hadron_isPU_dominated, "GV has majority selected daughters from pileup");
         
         //
 
@@ -290,6 +356,14 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         dauTable->addColumn<float>("phi",Daughters_phi,"Daughter phi");
         dauTable->addColumn<int>("charge",Daughters_charge,"Daughter charge");
         dauTable->addColumn<int>("hadronIndex",Daughters_GVidx,"Hadron index");
+
+	dauTable->addColumn<int>("collisionId", Daughters_collisionId, "GenParticle collisionId");
+	dauTable->addColumn<int>("isPU", Daughters_isPU, "Daughter from pileup collisionId > 0");
+	dauTable->addColumn<int>(
+	    "originLabel",
+	    Daughters_originLabel,
+	    "Daughter origin label: 0 primary, 1 PU, 2 fromB, 3 fromBC, 4 fromC, 5 otherSecondary, 9 unknown"
+	);
 
 
         //dauTable->addColumn<int>("hadronFlav",Daughters_flav,"Hadron flavor");
@@ -370,6 +444,94 @@ std::optional<std::tuple<float, float, float>> GenVertexProducer::isAncestor(con
 
     // If we reached here, the ancestor was not found in the chain
     return std::nullopt;
+}
+
+int GenVertexProducer::getCollisionIdSafe(const reco::Candidate* cand) const {
+    if (cand == nullptr)
+        return -999;
+
+    const auto* gp = dynamic_cast<const reco::GenParticle*>(cand);
+    if (gp == nullptr)
+        return -999;
+
+    return gp->collisionId();
+}
+
+
+int GenVertexProducer::getDaughterOriginLabel(const reco::Candidate* dau) const {
+    // Label meaning:
+    // 0 = primary / hard-scatter-like
+    // 1 = pileup
+    // 2 = fromB
+    // 3 = fromBC
+    // 4 = fromC
+    // 5 = otherSecondary: strange, tau, conversion-like
+    // 9 = unknown, e.g. not reco::GenParticle or collisionId unavailable
+
+    if (dau == nullptr)
+        return 9;
+
+    const int collId = getCollisionIdSafe(dau);
+
+    // If the object is not really a reco::GenParticle, keep this explicit.
+    if (collId == -999)
+        return 9;
+
+    // Clean MC PU label.
+    if (collId > 0)
+        return 1;
+
+    static const std::unordered_set<int> pdgSet_B = {
+        521, 511, 531, 541, 5122, 5132, 5232, 5332,
+        5142, 5242, 5342, 5512, 5532, 5542, 5554
+    };
+
+    static const std::unordered_set<int> pdgSet_C = {
+        411, 421, 431, 4122, 4232, 4132, 4332,
+        4412, 4422, 4432, 4444
+    };
+
+    static const std::unordered_set<int> pdgSet_S = {
+        310, 130,
+        3122, 3222, 3212, 3312, 3322, 3334
+    };
+
+    bool foundB = false;
+    bool foundC = false;
+    bool foundOtherSecondary = false;
+
+    const reco::Candidate* cur = dau;
+    int guard = 0;
+
+    while (cur != nullptr && cur->numberOfMothers() > 0 && guard++ < 100) {
+        const reco::Candidate* mom = cur->mother(0);
+        if (mom == nullptr || mom == cur)
+            break;
+
+        const int apdg = std::abs(mom->pdgId());
+
+        if (pdgSet_B.count(apdg))
+            foundB = true;
+
+        if (pdgSet_C.count(apdg))
+            foundC = true;
+
+        if (pdgSet_S.count(apdg) || apdg == 15 || apdg == 22)
+            foundOtherSecondary = true;
+
+        cur = mom;
+    }
+
+    if (foundB && foundC)
+        return 3;
+    if (foundB)
+        return 2;
+    if (foundC)
+        return 4;
+    if (foundOtherSecondary)
+        return 5;
+
+    return 0;
 }
 
 
@@ -600,7 +762,7 @@ std::tuple<std::vector<int>,std::vector<float>,std::vector<float>> GenVertexProd
                 float dR = deltaR(SVtrk_eta[iSV], SVtrk_phi[iSV], Daughters_eta[iHad], Daughters_phi[iHad]);
                 float relPt = std::fabs(SVtrk_pt[iSV] - Daughters_pt[iHad]) / Daughters_pt[iHad];
                 //std::cout<<"Comparing SV track (pt: "<<SVtrk_pt[iSV]<<", eta: "<<SVtrk_eta[iSV]<<", phi: "<<SVtrk_phi[iSV]<<") with Daughter (pt: "<<Daughters_pt[iHad]<<", eta: "<<Daughters_eta[iHad]<<", phi: "<<Daughters_phi[iHad]<<") => dR: "<<dR<<", relPt: "<<relPt<<std::endl;
-                if (dR < doubleMatching_dR_max && relPt < doubleMatching_dR_max) {
+                if (dR < doubleMatching_dR_max && relPt < doubleMatching_relPt_max) {
                     ++common;
                     //std::cout<<"  -> Matched! Common tracks: "<<common<<std::endl;
                     if (common >= 1) break; // break the iHad cycle

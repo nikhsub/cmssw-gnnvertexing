@@ -7,18 +7,23 @@
 #include "FWCore/Utilities/interface/FileInPath.h"
 #include "FWCore/Utilities/interface/Exception.h"
 #include "FWCore/MessageLogger/interface/MessageLogger.h"
+
 #include "DataFormats/NanoAOD/interface/FlatTable.h"
 #include "DataFormats/Provenance/interface/ProductID.h"
 #include "DataFormats/TrackReco/interface/Track.h"
 #include "DataFormats/TrackReco/interface/TrackFwd.h"
 #include "DataFormats/VertexReco/interface/Vertex.h"
+
 #include "PhysicsTools/ONNXRuntime/interface/ONNXRuntime.h"
+
 #include "RecoVertex/VertexPrimitives/interface/ConvertToFromReco.h"
 #include "RecoVertex/VertexPrimitives/interface/VertexState.h"
 #include "RecoVertex/VertexTools/interface/VertexDistance3D.h"
+
 #include "TrackingTools/PatternTools/interface/TwoTrackMinimumDistance.h"
 #include "TrackingTools/Records/interface/TransientTrackRecord.h"
 #include "TrackingTools/TransientTrack/interface/TransientTrackBuilder.h"
+
 #include "TLorentzVector.h"
 
 #include <algorithm>
@@ -36,7 +41,9 @@ namespace {
   constexpr unsigned int kNGlobalFeatures = 8;
   constexpr unsigned int kNClasses = 4;
 
-  float finiteOrZero(float value) { return std::isfinite(value) ? value : 0.f; }
+  float finiteOrZero(float value) {
+    return std::isfinite(value) ? value : 0.f;
+  }
 
   float safeRatio(float numerator, float denominator) {
     if (denominator == 0.f || !std::isfinite(denominator)) {
@@ -63,12 +70,14 @@ public:
 private:
   struct Candidate {
     int svIdx = -1;
+
     std::vector<float> trk;
     std::vector<float> edg;
     std::vector<float> eidx;
     std::vector<float> trkValid;
     std::vector<float> edgeValid;
     std::vector<float> glb;
+
     bool valid = false;
     bool truncatedTracks = false;
     bool truncatedEdges = false;
@@ -84,8 +93,10 @@ private:
   edm::EDGetTokenT<std::vector<reco::Vertex>> pvToken_;
   edm::EDGetTokenT<reco::TrackCollection> tracksToken_;
   edm::ESGetToken<TransientTrackBuilder, TransientTrackRecord> ttbToken_;
+
   std::vector<std::string> inputNames_;
   std::vector<std::string> outputNames_;
+
   unsigned int maxTracks_;
   unsigned int maxEdges_;
   double dlenSigMin_;
@@ -105,38 +116,48 @@ SVGraphGNNInferenceProducer::SVGraphGNNInferenceProducer(const edm::ParameterSet
       dlenSigMin_(iConfig.getParameter<double>("dlenSigMin")),
       debug_(iConfig.getUntrackedParameter<bool>("debug", false)) {
   if (maxTracks_ == 0 || maxEdges_ == 0) {
-    throw cms::Exception("Configuration") << "SVGraphGNNInferenceProducer requires positive maxTracks and maxEdges";
+    throw cms::Exception("Configuration")
+        << "SVGraphGNNInferenceProducer requires positive maxTracks and maxEdges";
   }
 
   const auto& modelOutputs = cache->getOutputNames();
+
   for (const auto& outputName : outputNames_) {
     if (!containsName(modelOutputs, outputName)) {
-      throw cms::Exception("Configuration") << "GraphVertexGNN model is missing required output '" << outputName << "'";
+      throw cms::Exception("Configuration")
+          << "GraphVertexGNN model is missing required output '" << outputName << "'";
     }
     (void)cache->getOutputShape(outputName);
   }
 
-  edm::LogInfo("SVGraphGNNInferenceProducer") << "Configured GraphVertexGNN inference with maxTracks=" << maxTracks_
-                                              << ", maxEdges=" << maxEdges_ << ", outputs=" << modelOutputs.size();
+  edm::LogInfo("SVGraphGNNInferenceProducer")
+      << "Configured GraphVertexGNN inference with maxTracks=" << maxTracks_
+      << ", maxEdges=" << maxEdges_
+      << ", outputs=" << modelOutputs.size();
 
   produces<nanoaod::FlatTable>("SVGraphGNN");
 }
 
 std::unique_ptr<cms::Ort::ONNXRuntime> SVGraphGNNInferenceProducer::initializeGlobalCache(
     const edm::ParameterSet& iConfig) {
-  return std::make_unique<cms::Ort::ONNXRuntime>(iConfig.getParameter<edm::FileInPath>("model_path").fullPath());
+  return std::make_unique<cms::Ort::ONNXRuntime>(
+      iConfig.getParameter<edm::FileInPath>("model_path").fullPath());
 }
 
 void SVGraphGNNInferenceProducer::fillDescriptions(edm::ConfigurationDescriptions& descriptions) {
   edm::ParameterSetDescription desc;
+
   desc.add<edm::InputTag>("src", edm::InputTag("myFinalInclusiveSecondaryVertices"));
   desc.add<edm::InputTag>("pvSrc", edm::InputTag("offlineSlimmedPrimaryVertices"));
   desc.add<edm::InputTag>("trackSrc", edm::InputTag("unpackedTracksAndVertices"));
-  desc.add<edm::FileInPath>("model_path", edm::FileInPath("PhysicsTools/data/GraphVertexGNN.onnx"));
+
+  desc.add<edm::FileInPath>("model_path");
+
   desc.add<unsigned int>("maxTracks", 16);
   desc.add<unsigned int>("maxEdges", 128);
   desc.add<double>("dlenSigMin", 3.0);
   desc.addUntracked<bool>("debug", false);
+
   descriptions.addWithDefaultLabel(desc);
 }
 
@@ -148,6 +169,7 @@ SVGraphGNNInferenceProducer::Candidate SVGraphGNNInferenceProducer::makeCandidat
     const TransientTrackBuilder& ttBuilder) const {
   Candidate cand;
   cand.svIdx = svIdx;
+
   cand.trk.assign(maxTracks_ * kNTrackFeatures, 0.f);
   cand.edg.assign(maxEdges_ * kNEdgeFeatures, 0.f);
   cand.eidx.assign(2 * maxEdges_, 0.f);
@@ -156,26 +178,37 @@ SVGraphGNNInferenceProducer::Candidate SVGraphGNNInferenceProducer::makeCandidat
   cand.glb.assign(kNGlobalFeatures, 0.f);
 
   VertexDistance3D vdist;
+
   const Measurement1D dl =
-      vdist.distance(pv0, VertexState(RecoVertex::convertPos(sv.position()), RecoVertex::convertError(sv.error())));
+      vdist.distance(pv0,
+                     VertexState(RecoVertex::convertPos(sv.position()),
+                                 RecoVertex::convertError(sv.error())));
+
   if (!(dl.value() > 0. && dl.significance() > dlenSigMin_)) {
     return cand;
   }
 
   std::vector<const reco::Track*> tracks;
   tracks.reserve(sv.tracksSize());
+
   TLorentzVector svP4;
+
   for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
     const edm::RefToBase<reco::Track>& trkRefBase = *it;
+
     if (trkRefBase.isNull()) {
       continue;
     }
+
     reco::TrackRef trkRef = trkRefBase.castTo<reco::TrackRef>();
+
     if (trkRef.isNull() || trkRef.id() != trackProductId) {
       continue;
     }
+
     const reco::Track* trk = trkRef.get();
     tracks.push_back(trk);
+
     TLorentzVector trkP4;
     trkP4.SetPtEtaPhiM(trk->pt(), trk->eta(), trk->phi(), kPionMass);
     svP4 += trkP4;
@@ -186,20 +219,25 @@ SVGraphGNNInferenceProducer::Candidate SVGraphGNNInferenceProducer::makeCandidat
   }
 
   cand.truncatedTracks = tracks.size() > maxTracks_;
+
   const unsigned int nTracks = std::min<unsigned int>(tracks.size(), maxTracks_);
 
   for (unsigned int i = 0; i < nTracks; ++i) {
     const auto& trk = *tracks[i];
     const unsigned int offset = i * kNTrackFeatures;
+
     cand.trk[offset + 0] = finiteOrZero(trk.pt());
     cand.trk[offset + 1] = finiteOrZero(trk.eta());
     cand.trk[offset + 2] = finiteOrZero(trk.phi());
     cand.trk[offset + 3] = finiteOrZero(trk.p());
+
     const float dz = finiteOrZero(trk.dz(pv0.position()));
+
     cand.trk[offset + 4] = dz;
     cand.trk[offset + 5] = safeRatio(dz, trk.dzError());
     cand.trk[offset + 6] = static_cast<float>(trk.charge());
     cand.trk[offset + 7] = static_cast<float>(trk.numberOfValidHits());
+
     cand.trkValid[i] = 1.f;
   }
 
@@ -213,9 +251,11 @@ SVGraphGNNInferenceProducer::Candidate SVGraphGNNInferenceProducer::makeCandidat
   cand.glb[7] = finiteOrZero(sv.ndof());
 
   unsigned int edge = 0;
+
   for (unsigned int i = 0; i < nTracks; ++i) {
     TLorentzVector p4i;
     p4i.SetPtEtaPhiM(tracks[i]->pt(), tracks[i]->eta(), tracks[i]->phi(), kPionMass);
+
     for (unsigned int j = i + 1; j < nTracks; ++j) {
       if (edge >= maxEdges_) {
         cand.truncatedEdges = true;
@@ -236,30 +276,48 @@ SVGraphGNNInferenceProducer::Candidate SVGraphGNNInferenceProducer::makeCandidat
 
       const auto ttrkI = ttBuilder.build(*tracks[i]);
       const auto ttrkJ = ttBuilder.build(*tracks[j]);
+
       TwoTrackMinimumDistance minDist;
-      if (ttrkI.isValid() && ttrkJ.isValid() && minDist.calculate(ttrkI.impactPointState(), ttrkJ.impactPointState())) {
+
+      if (ttrkI.isValid() &&
+          ttrkJ.isValid() &&
+          minDist.calculate(ttrkI.impactPointState(), ttrkJ.impactPointState())) {
         VertexDistance3D distanceComputer;
+
         auto m = distanceComputer.distance(
-            VertexState(minDist.points().second, ttrkI.impactPointState().cartesianError().position()),
-            VertexState(minDist.points().first, ttrkJ.impactPointState().cartesianError().position()));
+            VertexState(minDist.points().second,
+                        ttrkI.impactPointState().cartesianError().position()),
+            VertexState(minDist.points().first,
+                        ttrkJ.impactPointState().cartesianError().position()));
+
         dca = finiteOrZero(m.value());
+
         if (m.error() > 0.f) {
           dcaSig = finiteOrZero(m.value() / m.error());
         }
+
         GlobalPoint pvp(pv0.position().x(), pv0.position().y(), pv0.position().z());
         GlobalPoint cp(minDist.crossingPoint());
         GlobalPoint srcPCA = minDist.points().second;
         GlobalPoint dstPCA = minDist.points().first;
+
         cpToPv = finiteOrZero((cp - pvp).mag());
         pvToPcaSrc = finiteOrZero((srcPCA - pvp).mag());
         pvToPcaDst = finiteOrZero((dstPCA - pvp).mag());
-        dotprodSrc = finiteOrZero((srcPCA - pvp).unit().dot(ttrkI.impactPointState().globalDirection().unit()));
-        dotprodDst = finiteOrZero((dstPCA - pvp).unit().dot(ttrkJ.impactPointState().globalDirection().unit()));
-        GlobalVector pairMomentum((Basic3DVector<float>)(ttrkI.track().momentum() + ttrkJ.track().momentum()));
+
+        dotprodSrc =
+            finiteOrZero((srcPCA - pvp).unit().dot(ttrkI.impactPointState().globalDirection().unit()));
+        dotprodDst =
+            finiteOrZero((dstPCA - pvp).unit().dot(ttrkJ.impactPointState().globalDirection().unit()));
+
+        GlobalVector pairMomentum(
+            (Basic3DVector<float>)(ttrkI.track().momentum() + ttrkJ.track().momentum()));
+
         pairMom = finiteOrZero(pairMomentum.mag());
       }
 
       const unsigned int offset = edge * kNEdgeFeatures;
+
       cand.edg[offset + 0] = finiteOrZero(p4i.DeltaR(p4j));
       cand.edg[offset + 1] = finiteOrZero((p4i + p4j).M());
       cand.edg[offset + 2] = dca;
@@ -270,11 +328,15 @@ SVGraphGNNInferenceProducer::Candidate SVGraphGNNInferenceProducer::makeCandidat
       cand.edg[offset + 7] = dotprodSrc;
       cand.edg[offset + 8] = dotprodDst;
       cand.edg[offset + 9] = pairMom;
+
       cand.eidx[edge] = static_cast<float>(i);
       cand.eidx[maxEdges_ + edge] = static_cast<float>(j);
+
       cand.edgeValid[edge] = 1.f;
+
       ++edge;
     }
+
     if (cand.truncatedEdges) {
       break;
     }
@@ -292,48 +354,63 @@ void SVGraphGNNInferenceProducer::produce(edm::Event& iEvent, const edm::EventSe
   std::vector<int> outSvIdx;
   std::vector<int> outValidGraph;
   std::vector<int> outPredClass;
+
   std::vector<float> outProbB;
   std::vector<float> outProbDPrompt;
   std::vector<float> outProbDFromB;
   std::vector<float> outProbOther;
+
   std::vector<float> outLogitB;
   std::vector<float> outLogitDPrompt;
   std::vector<float> outLogitDFromB;
   std::vector<float> outLogitOther;
 
   std::vector<Candidate> candidates;
+
   if (svs.isValid() && pvs.isValid() && !pvs->empty() && tracks.isValid()) {
     const auto& pv0 = pvs->front();
     const auto& ttBuilder = iSetup.getData(ttbToken_);
+
     candidates.reserve(svs->size());
+
     int svIdx = 0;
+
     for (const auto& sv : *svs) {
       Candidate cand = makeCandidate(sv, pv0, svIdx, tracks.id(), ttBuilder);
+
       if (cand.valid) {
         candidates.emplace_back(std::move(cand));
       }
+
       ++svIdx;
     }
   }
 
-  outSvIdx.reserve(candidates.size());
-  outValidGraph.assign(candidates.size(), 0);
-  outPredClass.assign(candidates.size(), -1);
-  outProbB.assign(candidates.size(), -1.f);
-  outProbDPrompt.assign(candidates.size(), -1.f);
-  outProbDFromB.assign(candidates.size(), -1.f);
-  outProbOther.assign(candidates.size(), -1.f);
-  outLogitB.assign(candidates.size(), -999.f);
-  outLogitDPrompt.assign(candidates.size(), -999.f);
-  outLogitDFromB.assign(candidates.size(), -999.f);
-  outLogitOther.assign(candidates.size(), -999.f);
+  const std::size_t nCand = candidates.size();
+
+  outSvIdx.reserve(nCand);
+  outValidGraph.assign(nCand, 0);
+  outPredClass.assign(nCand, -1);
+
+  outProbB.assign(nCand, -1.f);
+  outProbDPrompt.assign(nCand, -1.f);
+  outProbDFromB.assign(nCand, -1.f);
+  outProbOther.assign(nCand, -1.f);
+
+  outLogitB.assign(nCand, -999.f);
+  outLogitDPrompt.assign(nCand, -999.f);
+  outLogitDFromB.assign(nCand, -999.f);
+  outLogitOther.assign(nCand, -999.f);
+
   for (const auto& cand : candidates) {
     outSvIdx.push_back(cand.svIdx);
   }
 
   if (!candidates.empty()) {
-    const int64_t batchSize = candidates.size();
+    const int64_t batchSize = static_cast<int64_t>(candidates.size());
+
     cms::Ort::FloatArrays inputValues(6);
+
     inputValues[0].reserve(batchSize * maxTracks_ * kNTrackFeatures);
     inputValues[1].reserve(batchSize * maxEdges_ * kNEdgeFeatures);
     inputValues[2].reserve(batchSize * 2 * maxEdges_);
@@ -343,6 +420,7 @@ void SVGraphGNNInferenceProducer::produce(edm::Event& iEvent, const edm::EventSe
 
     unsigned int nTruncatedTracks = 0;
     unsigned int nTruncatedEdges = 0;
+
     for (const auto& cand : candidates) {
       inputValues[0].insert(inputValues[0].end(), cand.trk.begin(), cand.trk.end());
       inputValues[1].insert(inputValues[1].end(), cand.edg.begin(), cand.edg.end());
@@ -350,8 +428,9 @@ void SVGraphGNNInferenceProducer::produce(edm::Event& iEvent, const edm::EventSe
       inputValues[3].insert(inputValues[3].end(), cand.trkValid.begin(), cand.trkValid.end());
       inputValues[4].insert(inputValues[4].end(), cand.edgeValid.begin(), cand.edgeValid.end());
       inputValues[5].insert(inputValues[5].end(), cand.glb.begin(), cand.glb.end());
-      nTruncatedTracks += cand.truncatedTracks;
-      nTruncatedEdges += cand.truncatedEdges;
+
+      nTruncatedTracks += cand.truncatedTracks ? 1 : 0;
+      nTruncatedEdges += cand.truncatedEdges ? 1 : 0;
     }
 
     const std::vector<std::vector<int64_t>> inputShapes = {
@@ -362,67 +441,133 @@ void SVGraphGNNInferenceProducer::produce(edm::Event& iEvent, const edm::EventSe
         {batchSize, static_cast<int64_t>(maxEdges_)},
         {batchSize, static_cast<int64_t>(kNGlobalFeatures)}};
 
-    const auto outputs = globalCache()->run(inputNames_, inputValues, inputShapes, outputNames_, batchSize);
-    if (outputs.size() != 3) {
-      throw cms::Exception("RuntimeError") << "GraphVertexGNN returned " << outputs.size() << " outputs, expected 3";
+    if (debug_) {
+      unsigned int nCandWithAnyTrkValid = 0;
+      unsigned int nCandWithAnyEdgeValid = 0;
+
+      for (std::size_t ic = 0; ic < candidates.size(); ++ic) {
+        float trkValidSum = 0.f;
+        float edgeValidSum = 0.f;
+
+        for (float v : candidates[ic].trkValid) {
+          trkValidSum += v;
+        }
+        for (float v : candidates[ic].edgeValid) {
+          edgeValidSum += v;
+        }
+
+        if (trkValidSum > 0.f) {
+          ++nCandWithAnyTrkValid;
+        }
+        if (edgeValidSum > 0.f) {
+          ++nCandWithAnyEdgeValid;
+        }
+
+        if (ic < 10) {
+          edm::LogInfo("SVGraphGNNInferenceProducer")
+              << "Input candidate " << ic
+              << ": svIdx=" << candidates[ic].svIdx
+              << ", trkValidSum=" << trkValidSum
+              << ", edgeValidSum=" << edgeValidSum
+              << ", glb_nTracks=" << candidates[ic].glb[2]
+              << ", glb_dlen=" << candidates[ic].glb[4]
+              << ", glb_dlenSig=" << candidates[ic].glb[5];
+        }
+      }
+
+      edm::LogInfo("SVGraphGNNInferenceProducer")
+          << "Before ONNX: candidates=" << candidates.size()
+          << ", candidates with trkValidSum>0=" << nCandWithAnyTrkValid
+          << ", candidates with edgeValidSum>0=" << nCandWithAnyEdgeValid;
     }
+
+    const auto outputs =
+        globalCache()->run(inputNames_, inputValues, inputShapes, outputNames_, batchSize);
+
+    if (outputs.size() != 3) {
+      throw cms::Exception("RuntimeError")
+          << "GraphVertexGNN returned " << outputs.size()
+          << " outputs, expected 3: vertex_logits, vertex_probs, valid_graph_mask";
+    }
+
     const auto& logits = outputs[0];
     const auto& probs = outputs[1];
     const auto& validMask = outputs[2];
+
     if (validMask.size() != candidates.size()) {
       throw cms::Exception("RuntimeError")
-          << "GraphVertexGNN valid_graph_mask has length " << validMask.size() << ", expected " << candidates.size();
+          << "GraphVertexGNN valid_graph_mask has length " << validMask.size()
+          << ", expected " << candidates.size();
     }
 
-    std::size_t compressedRow = 0;
+    if (logits.size() != candidates.size() * kNClasses ||
+        probs.size() != candidates.size() * kNClasses) {
+      throw cms::Exception("RuntimeError")
+          << "GraphVertexGNN output shape mismatch: "
+          << "nCandidates=" << candidates.size()
+          << ", logits.size()=" << logits.size()
+          << ", probs.size()=" << probs.size()
+          << ", expected each to be " << candidates.size() * kNClasses
+          << ". This plugin expects uncompressed [B,4] logits/probs.";
+    }
+
     for (std::size_t i = 0; i < candidates.size(); ++i) {
-      const bool valid = validMask[i] > 0.5f;
-      outValidGraph[i] = valid ? 1 : 0;
-      if (!valid) {
-        continue;
-      }
-      const std::size_t base = compressedRow * kNClasses;
-      if (base + kNClasses > probs.size() || base + kNClasses > logits.size()) {
-        throw cms::Exception("RuntimeError") << "GraphVertexGNN compressed output row count is inconsistent with "
-                                             << "valid_graph_mask";
-      }
+      const std::size_t base = i * kNClasses;
+
+      outValidGraph[i] = validMask[i] > 0.5f ? 1 : 0;
+
       outLogitB[i] = logits[base + 0];
       outLogitDPrompt[i] = logits[base + 1];
       outLogitDFromB[i] = logits[base + 2];
       outLogitOther[i] = logits[base + 3];
+
       outProbB[i] = probs[base + 0];
       outProbDPrompt[i] = probs[base + 1];
       outProbDFromB[i] = probs[base + 2];
       outProbOther[i] = probs[base + 3];
+
       const auto begin = probs.begin() + base;
-      outPredClass[i] = static_cast<int>(std::distance(begin, std::max_element(begin, begin + kNClasses)));
-      ++compressedRow;
-    }
-    if (compressedRow * kNClasses != probs.size()) {
-      throw cms::Exception("RuntimeError") << "GraphVertexGNN produced " << probs.size() / kNClasses
-                                           << " probability rows, but valid_graph_mask selected " << compressedRow;
+      outPredClass[i] =
+          static_cast<int>(std::distance(begin, std::max_element(begin, begin + kNClasses)));
     }
 
     if (debug_) {
+      unsigned int nValidGraph = 0;
+      for (float v : validMask) {
+        if (v > 0.5f) {
+          ++nValidGraph;
+        }
+      }
+
       edm::LogInfo("SVGraphGNNInferenceProducer")
-          << "Processed " << candidates.size() << " candidates, valid ONNX rows=" << compressedRow
-          << ", track-truncated=" << nTruncatedTracks << ", edge-truncated=" << nTruncatedEdges;
+          << "After ONNX: candidates=" << candidates.size()
+          << ", validGraph=" << nValidGraph
+          << ", logits rows=" << logits.size() / kNClasses
+          << ", probs rows=" << probs.size() / kNClasses
+          << ", track-truncated=" << nTruncatedTracks
+          << ", edge-truncated=" << nTruncatedEdges;
     }
   }
 
   auto table = std::make_unique<nanoaod::FlatTable>(outSvIdx.size(), "SVGraphGNN", false);
+
   table->addColumn<int>("svIdx", outSvIdx, "Original secondary-vertex index in the input collection");
   table->addColumn<int>(
-      "validGraph", outValidGraph, "GraphVertexGNN valid_graph_mask mapped to the original candidate");
+      "validGraph",
+      outValidGraph,
+      "ONNX padding-mask diagnostic: 1 if the dense graph row contains at least one non-padded track");
   table->addColumn<int>("predClass", outPredClass, "Argmax class: 0=isB, 1=isD_prompt, 2=isD_fromB, 3=isOther");
+
   table->addColumn<float>("prob_isB", outProbB, "GraphVertexGNN probability for class isB");
   table->addColumn<float>("prob_isD_prompt", outProbDPrompt, "GraphVertexGNN probability for class isD_prompt");
   table->addColumn<float>("prob_isD_fromB", outProbDFromB, "GraphVertexGNN probability for class isD_fromB");
   table->addColumn<float>("prob_isOther", outProbOther, "GraphVertexGNN probability for class isOther");
+
   table->addColumn<float>("logit_isB", outLogitB, "GraphVertexGNN logit for class isB");
   table->addColumn<float>("logit_isD_prompt", outLogitDPrompt, "GraphVertexGNN logit for class isD_prompt");
   table->addColumn<float>("logit_isD_fromB", outLogitDFromB, "GraphVertexGNN logit for class isD_fromB");
   table->addColumn<float>("logit_isOther", outLogitOther, "GraphVertexGNN logit for class isOther");
+
   iEvent.put(std::move(table), "SVGraphGNN");
 }
 

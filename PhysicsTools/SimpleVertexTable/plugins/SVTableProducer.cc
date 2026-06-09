@@ -86,7 +86,8 @@ void SVTableProducer::produce(edm::StreamID,
 
 
         std::vector<float> x, y, z, chi2, ndof, pt, eta, phi, mass, dlen, dlenSig;
-        std::vector<float> trk_pt, trk_eta, trk_phi, trk_weight;// trk_SVscore;
+	std::vector<float> covXX, covXY, covXZ, covYY, covYZ, covZZ;
+	std::vector<float> trk_pt, trk_eta, trk_phi, trk_weight;// trk_SVscore;
         std::vector<float> trk_ip_z, trk_ip_z_sig, trk_ip2d, trk_ip3d, trk_ip2d_sig, trk_ip3d_sig, trk_p, trk_charge, trk_numberOfValidHits, trk_numberOfValidPixelHits, trk_numberOfValidStripHits;
         // vector pair [num_tracks * num_tracks / 2]
         // trk_i 
@@ -125,6 +126,15 @@ void SVTableProducer::produce(edm::StreamID,
                 x.push_back(sv.x());
                 y.push_back(sv.y());
                 z.push_back(sv.z());
+
+		const auto& cov = sv.covariance();
+		covXX.push_back(cov(0,0));
+		covXY.push_back(cov(0,1));
+		covXZ.push_back(cov(0,2));
+		covYY.push_back(cov(1,1));
+		covYZ.push_back(cov(1,2));
+		covZZ.push_back(cov(2,2));
+
                 chi2.push_back(sv.chi2());
                 ndof.push_back(sv.ndof());
                 nTracks.push_back(nTrksPerSV);
@@ -215,6 +225,14 @@ void SVTableProducer::produce(edm::StreamID,
         table->addColumn<float>("x", x, "X position of SV");
         table->addColumn<float>("y", y, "Y position of SV");
         table->addColumn<float>("z", z, "Z position of SV");
+
+	table->addColumn<float>("covXX", covXX, "SV covariance matrix element xx");
+	table->addColumn<float>("covXY", covXY, "SV covariance matrix element xy");
+	table->addColumn<float>("covXZ", covXZ, "SV covariance matrix element xz");
+	table->addColumn<float>("covYY", covYY, "SV covariance matrix element yy");
+	table->addColumn<float>("covYZ", covYZ, "SV covariance matrix element yz");
+	table->addColumn<float>("covZZ", covZZ, "SV covariance matrix element zz");
+
         table->addColumn<float>("dlen", dlen, "dlen of SV");
         table->addColumn<float>("dlenSig", dlenSig, "dlenSig of SV");
         //std::cout<<"[DEBUG] SVTableProducer added x,y,z columns\n";

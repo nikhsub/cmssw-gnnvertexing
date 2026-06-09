@@ -326,7 +326,7 @@ void PATGenCandsFromSimTracksProducer::produce(Event &event, const EventSetup &i
   }
 
   // Write to the Event, and get back a handle (which can be useful for debugging)
-  edm::OrphanHandle<reco::GenParticleCollection> orphans = event.put(std::move(cands));
+  //edm::OrphanHandle<reco::GenParticleCollection> orphans = event.put(std::move(cands));
 
 #ifdef DEBUG_PATGenCandsFromSimTracksProducer
   std::cout << "Produced a list of " << orphans->size() << " genParticles." << std::endl;

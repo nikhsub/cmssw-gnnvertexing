@@ -7,6 +7,9 @@ __init__.py
 *.pb
 __pycache__/
 *.onnx
+*.pdf
+*.csv
+*.png
 
 # ignore partially applied patches and their backup
 *.rej

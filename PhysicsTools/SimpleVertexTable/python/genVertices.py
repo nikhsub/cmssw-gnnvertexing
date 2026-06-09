@@ -24,7 +24,7 @@ genVertexProducer = cms.EDProducer("GenVertexProducer",
     genParticles = cms.InputTag("mergedGenParticles"),
     secondaryVertices = cms.InputTag("myFinalInclusiveSecondaryVertices"),
     pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
-    nRequiredCommonTracks = cms.int32(2),        # number of tracks required to match the genDaughters
+    nRequiredCommonTracks = cms.int32(1),        # number of tracks required to match the genDaughters
     dlenSigMin = cms.double(3.0),
     dR_max = cms.double(0.03),                                   # dR between tracks and daughters to be considered matched
     relPt_max = cms.double(0.2),
@@ -39,7 +39,7 @@ svTruthTableProducer = cms.EDProducer("SVTruthTableProducer",
     svTrkTable = cms.InputTag("svTable", "SVtrksTable"),
     gvTable = cms.InputTag("gvProducer", "GVTable"),
     gvDaughtersTable = cms.InputTag("gvProducer", "GVDaughtersTable"),
-    nRequiredCommonTracks = cms.int32(2),
+    nRequiredCommonTracks = cms.int32(1),
     dR_max = cms.double(0.03),
     relPt_max = cms.double(0.2)
 )

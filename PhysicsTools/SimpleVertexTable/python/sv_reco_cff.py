@@ -98,7 +98,7 @@ svGraphGNNInference = cms.EDProducer("SVGraphGNNInferenceProducer",
     src = cms.InputTag("myFinalInclusiveSecondaryVertices"),
     pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
     trackSrc = cms.InputTag("unpackedTracksAndVertices"),
-    model_path = cms.FileInPath("PhysicsTools/data/GraphVertexGNN.onnx"),
+    model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_0106.onnx"),
     maxTracks = cms.uint32(16),
     maxEdges = cms.uint32(128),
     dlenSigMin = cms.double(3.0),
@@ -112,28 +112,24 @@ svGraphGNNInference = cms.EDProducer("SVGraphGNNInferenceProducer",
 
 
 
-def custom_sv_tracks(process, threshold_value=0.0,
-                     graph_gnn_model_path="PhysicsTools/data/GraphVertexGNN.onnx",
-                     enable_graph_gnn=True):
-  process.unpackedTracksAndVertices = unpackedTracksAndVertices
-  process.inclusiveVertexFinder = inclusiveVertexFinder
-  process.vertexMerger = vertexMerger
-  process.trackVertexArbitrator = trackVertexArbitrator
-  process.myFinalInclusiveSecondaryVertices = myFinalInclusiveSecondaryVertices
-  process.svTable = svTable
-  process.svGraphGNNInference = svGraphGNNInference.clone(
-        model_path = cms.FileInPath(graph_gnn_model_path)
-    )
-  process.dummyValueMap = dummyValueMap.clone(
-        threshold = cms.double(threshold_value)
-    )
-  process.sv_track = cms.Sequence(   process.unpackedTracksAndVertices*
-                                      #process.dummyValueMap*
-                                      process.inclusiveVertexFinder*
-                                      process.vertexMerger*
-                                      process.trackVertexArbitrator*
-                                      process.myFinalInclusiveSecondaryVertices*
-                                      process.svTable)
-  if enable_graph_gnn:
-    process.sv_track += process.svGraphGNNInference
-  return process
+def custom_sv_tracks(process, threshold_value=0.0):
+    process.unpackedTracksAndVertices = unpackedTracksAndVertices
+    process.inclusiveVertexFinder = inclusiveVertexFinder
+    process.vertexMerger = vertexMerger
+    process.trackVertexArbitrator = trackVertexArbitrator
+    process.myFinalInclusiveSecondaryVertices = myFinalInclusiveSecondaryVertices
+    process.svTable = svTable
+    process.svGNN = svGraphGNNInference.clone()
+    process.dummyValueMap = dummyValueMap.clone(
+          threshold = cms.double(threshold_value)
+      )
+    process.sv_track = cms.Sequence(   process.unpackedTracksAndVertices*
+                                        process.dummyValueMap*
+                                        process.inclusiveVertexFinder*
+                                        process.vertexMerger*
+                                        process.trackVertexArbitrator*
+                                        process.myFinalInclusiveSecondaryVertices*
+                                        process.svTable)
+
+    process.sv_track += process.svGNN
+    return process
