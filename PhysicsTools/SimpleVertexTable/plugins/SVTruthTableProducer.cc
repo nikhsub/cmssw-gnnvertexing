@@ -74,12 +74,13 @@ public:
     const int idxIsD = gvTable->columnIndex("isD");
     const int idxIsBtoD = gvTable->columnIndex("isBtoD");
 
-    // Optional GV PU diagnostic columns
-    const int idxGVFracDauPU = gvTable->columnIndex("fracDauPU");
-    const int idxGVIsPUDominated = gvTable->columnIndex("isPU_dominated");
-    const int idxGVNDauPU = gvTable->columnIndex("nDauPU");
-    const int idxGVNDauPrimary = gvTable->columnIndex("nDauPrimary");
-    const int idxGVNDauUnknown = gvTable->columnIndex("nDauUnknown");
+    const int idxGVNDauNoRecognizedSecondaryAncestor =
+        gvTable->columnIndex("nDauNoRecognizedSecondaryAncestor");
+    const int idxGVNDauFromB = gvTable->columnIndex("nDauFromB");
+    const int idxGVNDauFromBC = gvTable->columnIndex("nDauFromBC");
+    const int idxGVNDauFromC = gvTable->columnIndex("nDauFromC");
+    const int idxGVNDauOtherSecondary = gvTable->columnIndex("nDauOtherSecondary");
+    const int idxGVNDauOriginUnknown = gvTable->columnIndex("nDauOriginUnknown");
 
     // -------------------------
     // GV daughter columns
@@ -88,10 +89,6 @@ public:
     const int idxDauEta = gvDauTable->columnIndex("eta");
     const int idxDauPhi = gvDauTable->columnIndex("phi");
     const int idxDauGVIdx = gvDauTable->columnIndex("hadronIndex");
-
-    // Optional daughter diagnostics
-    const int idxDauCollisionId = gvDauTable->columnIndex("collisionId");
-    const int idxDauIsPU = gvDauTable->columnIndex("isPU");
     const int idxDauOriginLabel = gvDauTable->columnIndex("originLabel");
 
     if (idxSVx < 0 || idxSVy < 0 || idxSVz < 0 ||
@@ -104,19 +101,15 @@ public:
       throw cms::Exception("MissingColumn")
           << "SVTruthTableProducer is missing required columns from input FlatTables. "
           << "Required: SV x/y/z/covXX/covXY/covXZ/covYY/covYZ/covZZ, "
-          << "SV track pt/eta/phi/SVidx, GV x/y/z/pdgClass/Hadron_pdgId, "
-          << "and GVDaughter pt/eta/phi/hadronIndex.";
+          << "SV track trk_pt/trk_eta/trk_phi/trk_SVidx, "
+          << "GV x/y/z/pdgClass/Hadron_pdgId, "
+          << "and GVDaughters pt/eta/phi/hadronIndex.";
     }
 
-    const bool hasDaughterCollisionId = (idxDauCollisionId >= 0);
-    const bool hasDaughterIsPU = (idxDauIsPU >= 0);
-    const bool hasDaughterOrigin = (idxDauOriginLabel >= 0);
-
-    const bool hasGVFracDauPU = (idxGVFracDauPU >= 0);
-    const bool hasGVIsPUDominated = (idxGVIsPUDominated >= 0);
-    const bool hasGVNDauPU = (idxGVNDauPU >= 0);
-    const bool hasGVNDauPrimary = (idxGVNDauPrimary >= 0);
-    const bool hasGVNDauUnknown = (idxGVNDauUnknown >= 0);
+    const bool hasIsB = idxIsB >= 0;
+    const bool hasIsD = idxIsD >= 0;
+    const bool hasIsBtoD = idxIsBtoD >= 0;
+    const bool hasDaughterOrigin = idxDauOriginLabel >= 0;
 
     // -------------------------
     // Output vectors
@@ -137,28 +130,32 @@ public:
     std::vector<float> bestMatchDistanceSig(nSV, -1.f);
 
     std::vector<int> nMatchedDaughters(nSV, 0);
-    std::vector<int> nOriginPrimary(nSV, 0);
-    std::vector<int> nOriginPU(nSV, 0);
+
+    // originLabel semantics:
+    // 0 = noRecognizedSecondaryAncestor / primary-or-pileup-like
+    // 2 = fromB
+    // 3 = fromBC
+    // 4 = fromC
+    // 5 = otherSecondary
+    // 9 = unknown
+    std::vector<int> nOriginNoRecognizedSecondaryAncestor(nSV, 0);
     std::vector<int> nOriginFromB(nSV, 0);
     std::vector<int> nOriginFromBC(nSV, 0);
     std::vector<int> nOriginFromC(nSV, 0);
     std::vector<int> nOriginOtherSecondary(nSV, 0);
     std::vector<int> nOriginUnknown(nSV, 0);
 
-    std::vector<float> fracOriginPU(nSV, -1.f);
+    std::vector<float> fracOriginNoRecognizedSecondaryAncestor(nSV, -1.f);
     std::vector<float> fracOriginHF(nSV, -1.f);
     std::vector<int> dominantOriginLabel(nSV, 9);
 
-    std::vector<int> nMatchedDauIsPU(nSV, 0);
-    std::vector<int> nMatchedDauNonPU(nSV, 0);
-    std::vector<int> nMatchedDauUnknownPU(nSV, 0);
-    std::vector<float> fracMatchedDauIsPU(nSV, -1.f);
-
-    std::vector<float> matchedGVFracDauPU(nSV, -1.f);
-    std::vector<int> matchedGVIsPUDominated(nSV, -1);
-    std::vector<int> matchedGVNDauPU(nSV, -1);
-    std::vector<int> matchedGVNDauPrimary(nSV, -1);
-    std::vector<int> matchedGVNDauUnknown(nSV, -1);
+    // Matched-GV copied daughter-origin summaries.
+    std::vector<int> matchedGV_nDauNoRecognizedSecondaryAncestor(nSV, -1);
+    std::vector<int> matchedGV_nDauFromB(nSV, -1);
+    std::vector<int> matchedGV_nDauFromBC(nSV, -1);
+    std::vector<int> matchedGV_nDauFromC(nSV, -1);
+    std::vector<int> matchedGV_nDauOtherSecondary(nSV, -1);
+    std::vector<int> matchedGV_nDauOriginUnknown(nSV, -1);
 
     // -------------------------
     // Read SV positions and covariance
@@ -174,19 +171,19 @@ public:
       svZ[isv] = static_cast<float>(svTable->getAnyValue(isv, idxSVz));
 
       CovMatrix cov;
-      cov(0,0) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovXX));
-      cov(0,1) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovXY));
-      cov(1,0) = cov(0,1);
+      cov(0, 0) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovXX));
+      cov(0, 1) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovXY));
+      cov(1, 0) = cov(0, 1);
 
-      cov(0,2) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovXZ));
-      cov(2,0) = cov(0,2);
+      cov(0, 2) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovXZ));
+      cov(2, 0) = cov(0, 2);
 
-      cov(1,1) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovYY));
+      cov(1, 1) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovYY));
 
-      cov(1,2) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovYZ));
-      cov(2,1) = cov(1,2);
+      cov(1, 2) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovYZ));
+      cov(2, 1) = cov(1, 2);
 
-      cov(2,2) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovZZ));
+      cov(2, 2) = static_cast<float>(svTable->getAnyValue(isv, idxSVCovZZ));
 
       svCov[isv] = cov;
     }
@@ -221,7 +218,7 @@ public:
     // Build per-GV daughter lists
     // -------------------------
     std::vector<std::vector<float>> dauPt(nGV), dauEta(nGV), dauPhi(nGV);
-    std::vector<std::vector<int>> dauCollisionId(nGV), dauIsPU(nGV), dauOriginLabel(nGV);
+    std::vector<std::vector<int>> dauOriginLabel(nGV);
 
     for (unsigned int i = 0; i < gvDauTable->size(); ++i) {
       const int igv = static_cast<int>(gvDauTable->getAnyValue(i, idxDauGVIdx));
@@ -231,16 +228,6 @@ public:
       dauPt[igv].push_back(static_cast<float>(gvDauTable->getAnyValue(i, idxDauPt)));
       dauEta[igv].push_back(static_cast<float>(gvDauTable->getAnyValue(i, idxDauEta)));
       dauPhi[igv].push_back(static_cast<float>(gvDauTable->getAnyValue(i, idxDauPhi)));
-
-      if (hasDaughterCollisionId)
-        dauCollisionId[igv].push_back(static_cast<int>(gvDauTable->getAnyValue(i, idxDauCollisionId)));
-      else
-        dauCollisionId[igv].push_back(-999);
-
-      if (hasDaughterIsPU)
-        dauIsPU[igv].push_back(static_cast<int>(gvDauTable->getAnyValue(i, idxDauIsPU)));
-      else
-        dauIsPU[igv].push_back(-1);
 
       if (hasDaughterOrigin)
         dauOriginLabel[igv].push_back(static_cast<int>(gvDauTable->getAnyValue(i, idxDauOriginLabel)));
@@ -258,9 +245,6 @@ public:
 
     for (unsigned int isv = 0; isv < nSV; ++isv) {
       CovMatrix covInv = svCov[isv];
-
-      // This follows the pattern used in GenVertexProducer.
-      // If inversion fails/pathological, values can become unstable; protect below.
       covInv.Invert();
 
       for (unsigned int igv = 0; igv < nGV; ++igv) {
@@ -269,9 +253,9 @@ public:
         const float dz = svZ[isv] - gvZ[igv];
 
         const float chi2 =
-            dx * (covInv(0,0) * dx + covInv(0,1) * dy + covInv(0,2) * dz) +
-            dy * (covInv(1,0) * dx + covInv(1,1) * dy + covInv(1,2) * dz) +
-            dz * (covInv(2,0) * dx + covInv(2,1) * dy + covInv(2,2) * dz);
+            dx * (covInv(0, 0) * dx + covInv(0, 1) * dy + covInv(0, 2) * dz) +
+            dy * (covInv(1, 0) * dx + covInv(1, 1) * dy + covInv(1, 2) * dz) +
+            dz * (covInv(2, 0) * dx + covInv(2, 1) * dy + covInv(2, 2) * dz);
 
         float dist = 999.0f;
         if (std::isfinite(chi2) && chi2 >= 0.f)
@@ -283,7 +267,8 @@ public:
     }
 
     // -------------------------
-    // Greedy matching, same as GenVertexProducer, no double matching.
+    // Greedy matching, same basic scheme as GenVertexProducer.
+    // No double matching in SVTruthTableProducer.
     // -------------------------
     while (true) {
       float minDist = 999.0f;
@@ -300,15 +285,12 @@ public:
         }
       }
 
-      // Same stopping convention as GenVertexProducer.
       if (minDist >= 997.0f || bestSV < 0 || bestGV < 0)
         break;
 
       int common = 0;
       float trackScore = 0.f;
-
       std::vector<int> matchedOriginLabels;
-      std::vector<int> matchedIsPUFlags;
 
       for (size_t iSV = 0; iSV < svTrkPt[bestSV].size(); ++iSV) {
         for (size_t iHad = 0; iHad < dauPt[bestGV].size(); ++iHad) {
@@ -324,18 +306,12 @@ public:
 
           if (dR < dRMax_ && relPt < relPtMax_) {
             ++common;
-
             trackScore += (1.f - dR / dRMax_) + (1.f - relPt / relPtMax_);
 
             if (iHad < dauOriginLabel[bestGV].size())
               matchedOriginLabels.push_back(dauOriginLabel[bestGV][iHad]);
             else
               matchedOriginLabels.push_back(9);
-
-            if (iHad < dauIsPU[bestGV].size())
-              matchedIsPUFlags.push_back(dauIsPU[bestGV][iHad]);
-            else
-              matchedIsPUFlags.push_back(-1);
 
             if (common >= nRequiredCommonTracks_)
               break;
@@ -359,45 +335,47 @@ public:
         truthPdgId[bestSV] =
             static_cast<int>(gvTable->getAnyValue(bestGV, idxPdgId));
 
-        if (idxIsB >= 0)
+        if (hasIsB)
           truthIsB[bestSV] =
               static_cast<int>(gvTable->getAnyValue(bestGV, idxIsB));
 
-        if (idxIsD >= 0)
+        if (hasIsD)
           truthIsD[bestSV] =
               static_cast<int>(gvTable->getAnyValue(bestGV, idxIsD));
 
-        if (idxIsBtoD >= 0)
+        if (hasIsBtoD)
           truthIsBtoD[bestSV] =
               static_cast<int>(gvTable->getAnyValue(bestGV, idxIsBtoD));
 
-        if (hasGVFracDauPU)
-          matchedGVFracDauPU[bestSV] =
-              static_cast<float>(gvTable->getAnyValue(bestGV, idxGVFracDauPU));
+        if (idxGVNDauNoRecognizedSecondaryAncestor >= 0)
+          matchedGV_nDauNoRecognizedSecondaryAncestor[bestSV] =
+              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauNoRecognizedSecondaryAncestor));
 
-        if (hasGVIsPUDominated)
-          matchedGVIsPUDominated[bestSV] =
-              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVIsPUDominated));
+        if (idxGVNDauFromB >= 0)
+          matchedGV_nDauFromB[bestSV] =
+              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauFromB));
 
-        if (hasGVNDauPU)
-          matchedGVNDauPU[bestSV] =
-              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauPU));
+        if (idxGVNDauFromBC >= 0)
+          matchedGV_nDauFromBC[bestSV] =
+              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauFromBC));
 
-        if (hasGVNDauPrimary)
-          matchedGVNDauPrimary[bestSV] =
-              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauPrimary));
+        if (idxGVNDauFromC >= 0)
+          matchedGV_nDauFromC[bestSV] =
+              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauFromC));
 
-        if (hasGVNDauUnknown)
-          matchedGVNDauUnknown[bestSV] =
-              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauUnknown));
+        if (idxGVNDauOtherSecondary >= 0)
+          matchedGV_nDauOtherSecondary[bestSV] =
+              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauOtherSecondary));
+
+        if (idxGVNDauOriginUnknown >= 0)
+          matchedGV_nDauOriginUnknown[bestSV] =
+              static_cast<int>(gvTable->getAnyValue(bestGV, idxGVNDauOriginUnknown));
 
         nMatchedDaughters[bestSV] = static_cast<int>(matchedOriginLabels.size());
 
         for (const int lab : matchedOriginLabels) {
           if (lab == 0)
-            ++nOriginPrimary[bestSV];
-          else if (lab == 1)
-            ++nOriginPU[bestSV];
+            ++nOriginNoRecognizedSecondaryAncestor[bestSV];
           else if (lab == 2)
             ++nOriginFromB[bestSV];
           else if (lab == 3)
@@ -410,19 +388,11 @@ public:
             ++nOriginUnknown[bestSV];
         }
 
-        for (const int ispu : matchedIsPUFlags) {
-          if (ispu == 1)
-            ++nMatchedDauIsPU[bestSV];
-          else if (ispu == 0)
-            ++nMatchedDauNonPU[bestSV];
-          else
-            ++nMatchedDauUnknownPU[bestSV];
-        }
-
         const int nLab = nMatchedDaughters[bestSV];
         if (nLab > 0) {
-          fracOriginPU[bestSV] =
-              static_cast<float>(nOriginPU[bestSV]) / static_cast<float>(nLab);
+          fracOriginNoRecognizedSecondaryAncestor[bestSV] =
+              static_cast<float>(nOriginNoRecognizedSecondaryAncestor[bestSV]) /
+              static_cast<float>(nLab);
 
           const int nHF =
               nOriginFromB[bestSV] +
@@ -432,15 +402,11 @@ public:
           fracOriginHF[bestSV] =
               static_cast<float>(nHF) / static_cast<float>(nLab);
 
-          fracMatchedDauIsPU[bestSV] =
-              static_cast<float>(nMatchedDauIsPU[bestSV]) / static_cast<float>(nLab);
-
           int bestLab = 9;
           int bestCnt = -1;
 
           const std::vector<std::pair<int, int>> labCounts = {
-              {0, nOriginPrimary[bestSV]},
-              {1, nOriginPU[bestSV]},
+              {0, nOriginNoRecognizedSecondaryAncestor[bestSV]},
               {2, nOriginFromB[bestSV]},
               {3, nOriginFromBC[bestSV]},
               {4, nOriginFromC[bestSV]},
@@ -490,28 +456,36 @@ public:
     table->addColumn<float>("bestMatchDistanceSig", bestMatchDistanceSig, "SV-GV covariance-weighted distance significance for accepted match");
 
     table->addColumn<int>("nMatchedDaughters", nMatchedDaughters, "Number of matched GV daughters contributing to accepted SV-GV match");
-    table->addColumn<int>("nOriginPrimary", nOriginPrimary, "Matched daughters with originLabel 0");
-    table->addColumn<int>("nOriginPU", nOriginPU, "Matched daughters with originLabel 1; diagnostic only");
+
+    table->addColumn<int>(
+        "nOriginNoRecognizedSecondaryAncestor",
+        nOriginNoRecognizedSecondaryAncestor,
+        "Matched daughters with originLabel 0; no recognized B/C/strange/tau/conversion ancestry; may include primary-like or pileup-like particles");
+
     table->addColumn<int>("nOriginFromB", nOriginFromB, "Matched daughters from B ancestry");
     table->addColumn<int>("nOriginFromBC", nOriginFromBC, "Matched daughters from charm with B ancestry");
     table->addColumn<int>("nOriginFromC", nOriginFromC, "Matched daughters from charm ancestry");
     table->addColumn<int>("nOriginOtherSecondary", nOriginOtherSecondary, "Matched daughters from strange/tau/conversion-like ancestry");
     table->addColumn<int>("nOriginUnknown", nOriginUnknown, "Matched daughters with unavailable or unknown origin label");
 
-    table->addColumn<float>("fracOriginPU", fracOriginPU, "Fraction of matched daughters with originLabel 1; diagnostic only");
+    table->addColumn<float>(
+        "fracOriginNoRecognizedSecondaryAncestor",
+        fracOriginNoRecognizedSecondaryAncestor,
+        "Fraction of matched daughters with no recognized secondary ancestry; not a PV/PU discriminator");
+
     table->addColumn<float>("fracOriginHF", fracOriginHF, "Fraction of matched daughters with B/BC/C origin labels");
     table->addColumn<int>("dominantOriginLabel", dominantOriginLabel, "Most frequent matched-daughter origin label");
 
-    table->addColumn<int>("nMatchedDauIsPU", nMatchedDauIsPU, "Number of matched daughters with isPU == 1; diagnostic only");
-    table->addColumn<int>("nMatchedDauNonPU", nMatchedDauNonPU, "Number of matched daughters with isPU == 0; diagnostic only");
-    table->addColumn<int>("nMatchedDauUnknownPU", nMatchedDauUnknownPU, "Number of matched daughters with unavailable isPU diagnostic");
-    table->addColumn<float>("fracMatchedDauIsPU", fracMatchedDauIsPU, "Fraction of matched daughters with isPU == 1; diagnostic only");
+    table->addColumn<int>(
+        "matchedGV_nDauNoRecognizedSecondaryAncestor",
+        matchedGV_nDauNoRecognizedSecondaryAncestor,
+        "nDauNoRecognizedSecondaryAncestor copied from matched GV");
 
-    table->addColumn<float>("matchedGV_fracDauPU", matchedGVFracDauPU, "fracDauPU copied from matched GV; diagnostic only");
-    table->addColumn<int>("matchedGV_isPU_dominated", matchedGVIsPUDominated, "isPU_dominated copied from matched GV; diagnostic only");
-    table->addColumn<int>("matchedGV_nDauPU", matchedGVNDauPU, "nDauPU copied from matched GV; diagnostic only");
-    table->addColumn<int>("matchedGV_nDauPrimary", matchedGVNDauPrimary, "nDauPrimary copied from matched GV; diagnostic only");
-    table->addColumn<int>("matchedGV_nDauUnknown", matchedGVNDauUnknown, "nDauUnknown copied from matched GV; diagnostic only");
+    table->addColumn<int>("matchedGV_nDauFromB", matchedGV_nDauFromB, "nDauFromB copied from matched GV");
+    table->addColumn<int>("matchedGV_nDauFromBC", matchedGV_nDauFromBC, "nDauFromBC copied from matched GV");
+    table->addColumn<int>("matchedGV_nDauFromC", matchedGV_nDauFromC, "nDauFromC copied from matched GV");
+    table->addColumn<int>("matchedGV_nDauOtherSecondary", matchedGV_nDauOtherSecondary, "nDauOtherSecondary copied from matched GV");
+    table->addColumn<int>("matchedGV_nDauOriginUnknown", matchedGV_nDauOriginUnknown, "nDauOriginUnknown copied from matched GV");
 
     iEvent.put(std::move(table), "SVTruthTable");
   }

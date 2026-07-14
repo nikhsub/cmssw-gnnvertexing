@@ -26,3 +26,4 @@ __pycache__/
 
 #ignore mac specific file
 .DS_Store
+crab_projects/
