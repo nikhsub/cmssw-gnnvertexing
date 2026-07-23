@@ -47,6 +47,12 @@ public:
 
   static void fillDescriptions(edm::ConfigurationDescriptions &cdesc) {
     edm::ParameterSetDescription pdesc;
+    pdesc.add<edm::InputTag>("svScores", edm::InputTag("dummyTrackValueMap", "SVscore"));
+    pdesc.add<double>("svScoreThreshold", 0.5);
+    pdesc.add<edm::InputTag>("edgeScores", edm::InputTag("dummyTrackValueMap", "edgeScores"));
+    pdesc.add<edm::InputTag>("edgeIndices", edm::InputTag("dummyTrackValueMap", "edgeIndices"));
+    pdesc.add<double>("edgeScoreThreshold", 0.5);
+    pdesc.add<double>("seedScoreThreshold", 0.5);
     pdesc.add<edm::InputTag>("beamSpot", edm::InputTag("offlineBeamSpot"));
     pdesc.add<edm::InputTag>("primaryVertices", edm::InputTag("offlinePrimaryVertices"));
     if (std::is_same<VTX, reco::Vertex>::value) {
@@ -112,6 +118,12 @@ private:
   edm::EDGetTokenT<reco::VertexCollection> token_primaryVertex;
   edm::EDGetTokenT<InputContainer> token_tracks;
   edm::ESGetToken<TransientTrackBuilder, TransientTrackRecord> token_trackBuilder;
+  edm::EDGetTokenT<edm::ValueMap<float>> token_svScore;
+  edm::EDGetTokenT<edm::ValueMap<std::vector<float>>> token_edgeScores;
+  edm::EDGetTokenT<edm::ValueMap<std::vector<int>>>   token_edgeIndices;
+  float svScoreThreshold;
+  float edgeScoreThreshold;
+  float seedScoreThreshold;
   unsigned int minHits;
   unsigned int maxNTracks;
   double maxLIP;
@@ -147,6 +159,12 @@ TemplatedInclusiveVertexFinder<InputContainer, VTX>::TemplatedInclusiveVertexFin
       clusterizer(new TracksClusteringFromDisplacedSeed(params.getParameter<edm::ParameterSet>("clusterizer")))
 
 {
+  token_svScore = consumes<edm::ValueMap<float>>(params.getParameter<edm::InputTag>("svScores"));
+  token_edgeScores = consumes<edm::ValueMap<std::vector<float>>>(params.getParameter<edm::InputTag>("edgeScores"));
+  token_edgeIndices = consumes<edm::ValueMap<std::vector<int>>>(params.getParameter<edm::InputTag>("edgeIndices"));
+  svScoreThreshold = params.getParameter<double>("svScoreThreshold");
+  edgeScoreThreshold = params.getParameter<double>("edgeScoreThreshold");
+  seedScoreThreshold = params.getParameter<double>("seedScoreThreshold");
   token_beamSpot = consumes<reco::BeamSpot>(params.getParameter<edm::InputTag>("beamSpot"));
   token_primaryVertex = consumes<reco::VertexCollection>(params.getParameter<edm::InputTag>("primaryVertices"));
   token_tracks = consumes<InputContainer>(params.getParameter<edm::InputTag>("tracks"));
@@ -177,6 +195,13 @@ void TemplatedInclusiveVertexFinder<InputContainer, VTX>::produce(edm::Event &ev
                                          KalmanVertexUpdator<5>(),
                                          KalmanVertexTrackCompatibilityEstimator<5>(),
                                          KalmanVertexSmoother());
+
+  edm::Handle<edm::ValueMap<float>> svScores;
+  event.getByToken(token_svScore, svScores);
+  edm::Handle<edm::ValueMap<std::vector<float> >> edgeScores;
+  event.getByToken(token_edgeScores, edgeScores);
+  edm::Handle<edm::ValueMap<std::vector<int> >>   edgeIndices;
+  event.getByToken(token_edgeIndices,   edgeIndices);
 
   edm::Handle<BeamSpot> beamSpot;
   event.getByToken(token_beamSpot, beamSpot);
@@ -212,10 +237,28 @@ void TemplatedInclusiveVertexFinder<InputContainer, VTX>::produce(edm::Event &ev
         if (dtSig > maxTimeSig)
           continue;
       }
+      if (svScores.isValid()) {
+        reco::TrackRef ref = tt.trackBaseRef().castTo<reco::TrackRef>();
+        //std::cout<<"Track score = "<<(*svScores)[ref]<<std::endl;
+        if ((*svScores)[ref] < svScoreThreshold) continue;
+      }
+      //else {
+      //  std::cout << "SV score map not valid, skipping SV score cut" << std::endl;
+      //}
       tt.setBeamSpot(*beamSpot);
       tts.push_back(tt);
     }
-    std::vector<TracksClusteringFromDisplacedSeed::Cluster> clusters = clusterizer->clusters(pv, tts);
+    edm::Handle<edm::ValueMap<std::vector<float>>> edgeScores;
+    edm::Handle<edm::ValueMap<std::vector<int>>>   edgeIndices;
+    event.getByToken(token_edgeScores, edgeScores);
+    event.getByToken(token_edgeIndices, edgeIndices);
+
+    const edm::ValueMap<std::vector<float>> *edgeScoresPtr = edgeScores.isValid() ? edgeScores.product() : nullptr;
+    const edm::ValueMap<std::vector<int>>   *edgeIndicesPtr = edgeIndices.isValid() ? edgeIndices.product() : nullptr;
+    const edm::ValueMap<float> *svScoresPtr = svScores.isValid() ? svScores.product() : nullptr;
+
+    std::vector<TracksClusteringFromDisplacedSeed::Cluster> clusters = 
+    clusterizer->clusters(pv, tts, svScoresPtr,edgeScoresPtr, edgeIndicesPtr, edgeScoreThreshold, seedScoreThreshold);
 
     //Create BS object from PV to feed in the AVR
     BeamSpot::CovarianceMatrix cov;

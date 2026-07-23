@@ -37,6 +37,8 @@ SVTableProducer::SVTableProducer(const edm::ParameterSet &iConfig):
 {
     produces<nanoaod::FlatTable>("SVTable");
     produces<nanoaod::FlatTable>("SVtrksTable");
+    produces<nanoaod::FlatTable>("PVTable");   // <-- new
+
 }
 
 void SVTableProducer::produce(edm::StreamID,
@@ -62,6 +64,29 @@ void SVTableProducer::produce(edm::StreamID,
         //}
 
         const auto& PV0 = pvsIn->front();
+	        // --- PV table (leading vertex only) ---
+        auto pv_table = std::make_unique<nanoaod::FlatTable>(1, "myPV", true); // true = singleton
+
+        std::vector<float> pv_x{static_cast<float>(PV0.x())};
+        std::vector<float> pv_y{static_cast<float>(PV0.y())};
+        std::vector<float> pv_z{static_cast<float>(PV0.z())};
+        std::vector<float> pv_chi2{static_cast<float>(PV0.chi2())};
+        std::vector<float> pv_ndof{static_cast<float>(PV0.ndof())};
+        std::vector<float> pv_rho{static_cast<float>(PV0.position().Rho())};
+        std::vector<int> pv_ntracks{static_cast<int>(PV0.tracksSize())};
+        std::vector<bool> pv_isFake{PV0.isFake()};
+
+        pv_table->addColumn<float>("x", pv_x, "X position of leading PV");
+        pv_table->addColumn<float>("y", pv_y, "Y position of leading PV");
+        pv_table->addColumn<float>("z", pv_z, "Z position of leading PV");
+        pv_table->addColumn<float>("chi2", pv_chi2, "Chi2 of leading PV fit");
+        pv_table->addColumn<float>("ndof", pv_ndof, "Degrees of freedom of leading PV fit");
+        pv_table->addColumn<float>("rho", pv_rho, "Transverse position of leading PV");
+        pv_table->addColumn<int>("nTracks", pv_ntracks, "Number of tracks in leading PV");
+        pv_table->addColumn<bool>("isFake", pv_isFake, "Is fake PV flag");
+
+        iEvent.put(std::move(pv_table), "PVTable");
+
         unsigned int nSVtracks = 0;
         int nTrksCurrentSV = 0;
         unsigned int nSV_cutdlen = 0;

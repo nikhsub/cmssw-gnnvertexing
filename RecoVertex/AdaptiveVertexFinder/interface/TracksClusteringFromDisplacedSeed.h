@@ -30,13 +30,25 @@ public:
   };
   TracksClusteringFromDisplacedSeed(const edm::ParameterSet &params);
 
-  std::vector<Cluster> clusters(const reco::Vertex &pv, const std::vector<reco::TransientTrack> &selectedTracks);
+  std::vector<Cluster> clusters(const reco::Vertex &pv,
+    const std::vector<reco::TransientTrack> &selectedTracks,
+    const edm::ValueMap<float> *svScores = nullptr,
+    const edm::ValueMap<std::vector<float>> *edgeScores = nullptr,
+    const edm::ValueMap<std::vector<int>> *edgeIndices = nullptr,
+    float edgeScoreThreshold = 0.,
+    float seedScoreThreshold = 0.);
 
 private:
   bool trackFilter(const reco::TrackRef &track) const;
-  std::pair<std::vector<reco::TransientTrack>, GlobalPoint> nearTracks(const reco::TransientTrack &seed,
-                                                                       const std::vector<reco::TransientTrack> &tracks,
-                                                                       const reco::Vertex &primaryVertex) const;
+  std::pair<std::vector<reco::TransientTrack>, GlobalPoint> nearTracks(
+        const reco::TransientTrack &seed,
+        const std::vector<reco::TransientTrack> &tracks,
+        const reco::Vertex &primaryVertex,
+        const edm::ValueMap<float> *svScores,
+        const edm::ValueMap<std::vector<float>> *edgeScores,
+        const edm::ValueMap<std::vector<int>> *edgeIndices,
+        float edgeScoreThreshold,
+        float seedScoreThreshold) const;
 
   //	unsigned int				maxNTracks;
   double max3DIPSignificance;

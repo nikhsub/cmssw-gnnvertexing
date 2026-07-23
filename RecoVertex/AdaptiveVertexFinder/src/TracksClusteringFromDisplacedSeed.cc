@@ -14,12 +14,18 @@ TracksClusteringFromDisplacedSeed::TracksClusteringFromDisplacedSeed(const edm::
       clusterMinAngleCosine(params.getParameter<double>("clusterMinAngleCosine")),    //0.0
       maxTimeSignificance(params.getParameter<double>("maxTimeSignificance"))
 
-{}
+{
+}
 
 std::pair<std::vector<reco::TransientTrack>, GlobalPoint> TracksClusteringFromDisplacedSeed::nearTracks(
     const reco::TransientTrack &seed,
     const std::vector<reco::TransientTrack> &tracks,
-    const reco::Vertex &primaryVertex) const {
+    const reco::Vertex &primaryVertex,
+    const edm::ValueMap<float> *svScores,
+    const edm::ValueMap<std::vector<float>> *edgeScores,
+    const edm::ValueMap<std::vector<int>> *edgeIndices,
+    float edgeScoreThreshold,
+    float seedScoreThreshold) const {
   VertexDistance3D distanceComputer;
   GlobalPoint pv(primaryVertex.position().x(), primaryVertex.position().y(), primaryVertex.position().z());
   std::vector<reco::TransientTrack> result;
@@ -73,6 +79,41 @@ std::pair<std::vector<reco::TransientTrack>, GlobalPoint> TracksClusteringFromDi
            distance * distanceRatio < distanceFromPV &&  // cut scaling with track density
            distance < clusterMaxDistance &&
            timeSig < maxTimeSignificance);  // absolute distance cut
+           //std::cout<<"Edge score threshold is "<<edgeScoreThreshold<<" seed score threshold is "<<seedScoreThreshold<<" time significance is "<<timeSig<<" maxTimeSignificance is "<<maxTimeSignificance<<std::endl;
+           //if (edgeScores != nullptr){
+           // std::cout<<"edge scores available "<<std::endl;
+           //}
+           //else{
+           // std::cout<<"edge scores not available "<<std::endl;
+           //}
+           //if (edgeIndices != nullptr){
+           // std::cout<<"edge indices available "<<std::endl;
+           //}
+           //else{
+           // std::cout<<"edge indices not available "<<std::endl;
+           //}
+      if (selected && edgeScores != nullptr && edgeIndices != nullptr) {
+          reco::TrackRef seedRef = seed.trackBaseRef().castTo<reco::TrackRef>();
+          reco::TrackRef ttRef   = tt->trackBaseRef().castTo<reco::TrackRef>();
+
+          const std::vector<int>&   neighbors = (*edgeIndices)[seedRef];
+          const std::vector<float>& scores    = (*edgeScores)[seedRef];
+
+          auto it = std::find(neighbors.begin(), neighbors.end(), (int)ttRef.key());
+          if (it != neighbors.end()) {
+              float score = scores[it - neighbors.begin()];
+              //std::cout<<"score is "<< score<<std::endl;
+              if (score < edgeScoreThreshold) {
+                selected = false;
+                }
+              //else{
+                //std::cout << "Edge score of track passing Loose Cut-based cut is " << score << " above threshold " << edgeScoreThreshold << " for seed "
+                //          << seedRef.key() << " and track " << ttRef.key() << std::endl;
+               //           }
+          } else {
+              selected = false;  // no edge = not selected
+          }
+      }
 
 #ifdef VTXDEBUG
       std::cout << tt->trackBaseRef().key() << " :  " << (selected ? "+" : " ") << " " << m.significance() << " < "
@@ -98,13 +139,24 @@ std::pair<std::vector<reco::TransientTrack>, GlobalPoint> TracksClusteringFromDi
 }
 
 std::vector<TracksClusteringFromDisplacedSeed::Cluster> TracksClusteringFromDisplacedSeed::clusters(
-    const reco::Vertex &pv, const std::vector<reco::TransientTrack> &selectedTracks) {
+    const reco::Vertex &pv,
+    const std::vector<reco::TransientTrack> &selectedTracks,
+    const edm::ValueMap<float> *svScores,
+    const edm::ValueMap<std::vector<float>> *edgeScores,
+    const edm::ValueMap<std::vector<int>> *edgeIndices,
+    float edgeScoreThreshold,
+    float seedScoreThreshold) {
   using namespace reco;
   std::vector<TransientTrack> seeds;
   for (std::vector<TransientTrack>::const_iterator it = selectedTracks.begin(); it != selectedTracks.end(); it++) {
     std::pair<bool, Measurement1D> ip = IPTools::absoluteImpactParameter3D(*it, pv);
     if (ip.first && ip.second.value() >= min3DIPValue && ip.second.significance() >= min3DIPSignificance &&
         ip.second.value() <= max3DIPValue && ip.second.significance() <= max3DIPSignificance) {
+          // tighter selection to become a seed based on GNN
+          if ( svScores != nullptr) {
+              reco::TrackRef ref = it->trackBaseRef().castTo<reco::TrackRef>();
+              if ((*svScores)[ref] < seedScoreThreshold) continue;
+          }
 #ifdef VTXDEBUG
       std::cout << "new seed " << it - selectedTracks.begin() << " ref " << it->trackBaseRef().key() << " "
                 << ip.second.value() << " " << ip.second.significance() << " "
@@ -115,22 +167,19 @@ std::vector<TracksClusteringFromDisplacedSeed::Cluster> TracksClusteringFromDisp
     }
   }
 
-  std::vector<Cluster> clusters;
-  int i = 0;
-  for (std::vector<TransientTrack>::const_iterator s = seeds.begin(); s != seeds.end(); ++s, ++i) {
+std::vector<Cluster> clusterList;  // renamed from clusters
+int i = 0;
+for (std::vector<TransientTrack>::const_iterator s = seeds.begin(); s != seeds.end(); ++s, ++i) {
 #ifdef VTXDEBUG
     std::cout << "Seed N. " << i << std::endl;
-#endif  // VTXDEBUG
-    std::pair<std::vector<reco::TransientTrack>, GlobalPoint> ntracks = nearTracks(*s, selectedTracks, pv);
-    //	        std::cout << ntracks.first.size() << " " << ntracks.first.size()  << std::endl;
-    //                if(ntracks.first.size() == 0 || ntracks.first.size() > maxNTracks ) continue;
+#endif
+    std::pair<std::vector<reco::TransientTrack>, GlobalPoint> ntracks = nearTracks(*s, selectedTracks, pv, svScores,edgeScores, edgeIndices, edgeScoreThreshold, seedScoreThreshold);
     ntracks.first.push_back(*s);
     Cluster aCl;
     aCl.seedingTrack = *s;
     aCl.seedPoint = ntracks.second;
     aCl.tracks = ntracks.first;
-    clusters.push_back(aCl);
-  }
-
-  return clusters;
+    clusterList.push_back(aCl);
+}
+return clusterList;
 }

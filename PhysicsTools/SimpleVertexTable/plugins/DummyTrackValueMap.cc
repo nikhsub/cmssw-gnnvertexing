@@ -21,6 +21,10 @@ using namespace cms::Ort;
 #include <omp.h>
 #include <cmath>
 
+#include "DataFormats/Common/interface/Wrapper.h"
+#include <vector>
+
+
 
 class DummyTrackValueMap : public edm::stream::EDProducer<edm::GlobalCache<ONNXRuntime>> {
 public:
@@ -33,16 +37,19 @@ private:
   edm::EDGetTokenT<reco::TrackCollection> tracksToken_;
   edm::EDGetTokenT<std::vector<reco::Vertex>> pvsToken_;
   edm::ESGetToken<TransientTrackBuilder, TransientTrackRecord> theTTBToken;
-  float threshold_;
+  //float threshold_;
 };
 
 DummyTrackValueMap::DummyTrackValueMap(const edm::ParameterSet& iConfig, const ONNXRuntime *cache):
   tracksToken_(consumes<reco::TrackCollection>(iConfig.getParameter<edm::InputTag>("src"))),
   pvsToken_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("pvSrc"))),
-  theTTBToken(esConsumes<TransientTrackBuilder, TransientTrackRecord>(edm::ESInputTag("", "TransientTrackBuilder"))),
-  threshold_(iConfig.getParameter<double>("threshold"))
+  theTTBToken(esConsumes<TransientTrackBuilder, TransientTrackRecord>(edm::ESInputTag("", "TransientTrackBuilder")))
+  //threshold_(iConfig.getParameter<double>("threshold"))
 {
-    //produces<edm::ValueMap<float>>("SVscore");
+    produces<edm::ValueMap<float>>("SVscore");
+    produces<edm::ValueMap<std::vector<float>>>("edgeScores");
+    produces<edm::ValueMap<std::vector<int>>>("edgeIndices");
+
     //produces<edm::ValueMap<float>>("SVscoreB");
     //produces<edm::ValueMap<float>>("SVscoreC");
     //produces<edm::ValueMap<float>>("SVscoreCfromB");
@@ -355,6 +362,37 @@ void DummyTrackValueMap::produce(edm::Event& iEvent,const edm::EventSetup &iSetu
           return eb / (ea + eb);
     };
     //std::cout << "sv_logits_flat size = " << sv_logits_flat.size() << std::endl;
+    
+    // one vector per valid node, variable length
+    auto sigmoid = [](float x) { return 1.0f / (1.0f + std::exp(-x)); };
+    std::vector<std::vector<float>> score_map(num_tracks); // num_tracks = original tracks->size()
+    std::vector<std::vector<int>> idx_map(num_tracks);
+
+    for (size_t e = 0; e < edge_i.size(); ++e) {
+        int oi = nodeToOrig[edge_i[e]];  // back to original track index
+        int oj = nodeToOrig[edge_j[e]];
+        float score = sigmoid(edge_logits_flat[e]);
+        // both directions
+        idx_map[oi].push_back(oj);
+        score_map[oi].push_back(score);
+        idx_map[oj].push_back(oi);
+        score_map[oj].push_back(score);
+    }
+
+    // put in event
+    auto vmScores = std::make_unique<edm::ValueMap<std::vector<float>>>();
+    edm::ValueMap<std::vector<float>>::Filler fillerS(*vmScores);
+    fillerS.insert(tracks, score_map.begin(), score_map.end());
+    fillerS.fill();
+    iEvent.put(std::move(vmScores), "edgeScores");
+
+    auto vmIndices = std::make_unique<edm::ValueMap<std::vector<int>>>();
+    edm::ValueMap<std::vector<int>>::Filler fillerI(*vmIndices);
+    fillerI.insert(tracks, idx_map.begin(), idx_map.end());
+    fillerI.fill();
+    iEvent.put(std::move(vmIndices), "edgeIndices");
+
+
 
     //std::cout<<"Model output sizes: SV logits=" << sv_logits_flat.size() 
     //         << ", SV sub-logits=" << sv_sub_logits_flat.size() 
@@ -390,15 +428,16 @@ void DummyTrackValueMap::produce(edm::Event& iEvent,const edm::EventSetup &iSetu
 
 
 
-    //// evaluation of edge features
-    //for (const auto& trk_i : *tracks) {
-    //    for (const auto& trk_j : *tracks) {
-    //        //
-    //        // code here  now placeholder
-    //        //evaluator(i, j)
-    //        edge_score.push_back(1.0); 
-    //        }
-    //    }
+    // evaluation of edge features
+    for (const auto& trk_i : *tracks) {
+        for (const auto& trk_j : *tracks) {
+            //
+            // code here  now placeholder
+            //evaluator(i, j)
+            edge_score.push_back(1.0); 
+            }
+        }
+
 
     // GNN evaluation placeholder
 //    int idx = 0;
@@ -425,25 +464,28 @@ void DummyTrackValueMap::produce(edm::Event& iEvent,const edm::EventSetup &iSetu
 
 
     
-    auto selectedTracks = std::make_unique<std::vector<reco::Track>>();
-    std::vector<float> selected_SVscores;
-
-    selected_SVscores.reserve(tracks->size());
-
+       //auto selectedTracks = std::make_unique<std::vector<reco::Track>>();
+    std::vector<float> selected_SVscores;  // keep SVscore for selected tracks
+    
     for (size_t i = 0; i < tracks->size(); ++i) {
-        const int ni = origToNode[i];
-        if (ni < 0) continue;
+        int ni = origToNode[i];
+    
+        if (ni < 0) {
+            selected_SVscores.push_back(-1.0f); // or default
+        } else {
 
-        const float score = softmax2_prob1(ni);
-        if (score <= threshold_) continue;
-
-        selectedTracks->push_back((*tracks)[i]);
-        selected_SVscores.push_back(score);
-        // Global index space is defined as the original unpacked-track index.
+            selected_SVscores.push_back(softmax2_prob1(ni));
+            //if (softmax2_prob1(ni) > threshold_) {
+            //selectedTracks->push_back((*tracks)[i]);}
+        }
     }
 
+    filler.insert(tracks, selected_SVscores.begin(), selected_SVscores.end());
+    filler.fill();
+    iEvent.put(std::move(valMap), "SVscore"); 
 
-    iEvent.put(std::move(selectedTracks), "selectedTracks");
+
+    //iEvent.put(std::move(selectedTracks), "selectedTracks");
 
     auto globalTrackIdxMap = std::make_unique<edm::ValueMap<int>>();
     edm::ValueMap<int>::Filler globalIdxFiller(*globalTrackIdxMap);
@@ -456,9 +498,9 @@ void DummyTrackValueMap::produce(edm::Event& iEvent,const edm::EventSetup &iSetu
     globalIdxFiller.fill();
     iEvent.put(std::move(globalTrackIdxMap), "globalTrackIdxMap");
     // 3. Create a flat table with just one branch for SVscore
-    auto table = std::make_unique<nanoaod::FlatTable>(static_cast<unsigned int>(selected_SVscores.size()), "selectedTracks", false);
-    table->addColumn<float>("selectedTrack_SVscore", selected_SVscores, "selectedTrack_SVscore");
-    iEvent.put(std::move(table), "selectedTrackTable");
+    //auto table = std::make_unique<nanoaod::FlatTable>(static_cast<unsigned int>(selected_SVscores.size()), "selectedTracks", false);
+    //table->addColumn<float>("selectedTrack_SVscore", selected_SVscores, "selectedTrack_SVscore");
+    //iEvent.put(std::move(table), "selectedTrackTable");
 
     //putMap(track_SVscore, "SVscore");
     //putMap(track_SVscore_B, "SVscoreB");

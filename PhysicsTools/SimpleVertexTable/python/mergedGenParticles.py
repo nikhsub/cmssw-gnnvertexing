@@ -18,7 +18,7 @@ finalGenParticles = cms.EDProducer("GenParticlePruner",
 )
 
 ##################### Tables for final output and docs ##########################
-genParticleTable = cms.EDProducer("SimpleCandidateFlatTableProducer",
+genParticleTable = cms.EDProducer("SimpleGenParticleFlatTableProducer",
     src = cms.InputTag("finalGenParticles"),
     cut = cms.string(""), #we should not filter after pruning
     name= cms.string("GenPart"),
@@ -32,8 +32,11 @@ genParticleTable = cms.EDProducer("SimpleCandidateFlatTableProducer",
          #mass = Var("?mass>10 || (pdgId==22 && mass > 1) || abs(pdgId)==24 || pdgId==23?mass:0", float,precision="?8",doc="Mass stored for all particles with mass > 10 GeV and photons with mass > 1 GeV. For other particles you can lookup from PDGID"),
          pdgId  = Var("pdgId", int, doc="PDG id"),
          status  = Var("status", int, doc="Particle status. 1=stable"),
-         #genPartIdxMother = Var("?numberOfMothers>0?motherRef(0).key():-1", int, doc="index of the mother particle"),
-
+         genPartIdxMother = Var("?numberOfMothers>0?motherRef(0).key():-1", "int16", doc="index of the mother particle"),
+         genPartIdxMother_2 = Var("?numberOfMothers>1?motherRef(1).key():-1", "int16", doc="index of the mother particle"),
+         vx  = Var("vx", float, precision=14, doc="x coordinate of the production vertex"),
+         vy  = Var("vy", float, precision=14, doc="x coordinate of the production vertex"),
+         vz  = Var("vz", float, precision=14, doc="x coordinate of the production vertex"),
     )
 )
 

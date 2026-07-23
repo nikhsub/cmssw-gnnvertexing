@@ -76,6 +76,8 @@ GenVertexCandidateProducer::GenVertexCandidateProducer(const edm::ParameterSet& 
     produces<nanoaod::FlatTable>("GVTable");
     produces<nanoaod::FlatTable>("GVDaughtersTable");
     produces<nanoaod::FlatTable>("SVDaughtersTable");
+    produces<nanoaod::FlatTable>("SVGVMatchTable");
+
 }
 
 
@@ -260,6 +262,23 @@ void GenVertexCandidateProducer::produce(edm::Event& iEvent,
 
         Hadron_SVIdx = result.first;
         Hadron_SVDistance = result.second;
+
+        // Build per-SV matched flag / GV index (same ordering as SV_x)
+        std::vector<int> SV_GVIdx(SV_x.size(), -1);
+        std::vector<int> SV_isMatched(SV_x.size(), 0);
+        for (int had = 0; had < ngv; ++had) {
+            int sv = Hadron_SVIdx[had];
+            if (sv >= 0) {
+                SV_GVIdx[sv] = had;
+                SV_isMatched[sv] = 1;
+            }
+        }
+
+        // extension=true: name must match the FlatTable name produced for these SVs elsewhere
+        auto svGVTable = std::make_unique<nanoaod::FlatTable>(SV_x.size(), "SV", false, true);
+        svGVTable->addColumn<int>("GVIdx", SV_GVIdx, "Index of matched GenVertex hadron, -1 if unmatched");
+        svGVTable->addColumn<int>("isMatched", SV_isMatched, "1 if SV matched to a GV");
+        iEvent.put(std::move(svGVTable), "SVGVMatchTable");
 
         //  Build FlatTables 
 
