@@ -53,8 +53,8 @@ DummyTrackValueMap::DummyTrackValueMap(const edm::ParameterSet& iConfig, const O
     //produces<edm::ValueMap<float>>("SVscoreB");
     //produces<edm::ValueMap<float>>("SVscoreC");
     //produces<edm::ValueMap<float>>("SVscoreCfromB");
-    produces<std::vector<reco::Track>>("selectedTracks");
-    produces<nanoaod::FlatTable>("selectedTrackTable");
+    //produces<std::vector<reco::Track>>("selectedTracks");
+    //produces<nanoaod::FlatTable>("selectedTrackTable");
     produces<edm::ValueMap<int>>("globalTrackIdxMap");
 }
 std::unique_ptr<ONNXRuntime> DummyTrackValueMap::initializeGlobalCache(const edm::ParameterSet &iConfig) 

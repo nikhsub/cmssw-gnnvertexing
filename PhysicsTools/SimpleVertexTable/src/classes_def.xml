@@ -1,0 +1,9 @@
+<lcgdict>
+
+  <class name="edm::ValueMap<std::vector<int> >" />
+  <class name="edm::Wrapper<edm::ValueMap<std::vector<int> > >" />
+
+  <class name="edm::ValueMap<std::vector<float> >" />
+  <class name="edm::Wrapper<edm::ValueMap<std::vector<float> > >" />
+
+</lcgdict>
