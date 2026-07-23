@@ -39,8 +39,8 @@ inclusiveVertexFinder = cms.EDProducer('InclusiveVertexFinder',
   minHits = cms.uint32(4), #8
   minPt = cms.double(0.8),
   primaryVertices = cms.InputTag('unpackedTracksAndVertices'),
-  #tracks = cms.InputTag('dummyValueMap', 'selectedTracks'),
-  tracks = cms.InputTag('unpackedTracksAndVertices'),
+  tracks = cms.InputTag('dummyValueMap', 'selectedTracks'),
+  #tracks = cms.InputTag('unpackedTracksAndVertices'),
   useDirectVertexFitter = cms.bool(True),
   useVertexReco = cms.bool(True),
   vertexMinAngleCosine = cms.double(0.95),
@@ -105,6 +105,24 @@ svGraphGNNInference = cms.EDProducer("SVGraphGNNInferenceProducer",
     debug = cms.untracked.bool(False)
 )
 
+svGraphVertexGNNInference = cms.EDProducer("SVGraphVertexGNNInferenceProducer",
+    src = cms.InputTag("myFinalInclusiveSecondaryVertices"),
+    pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
+    trackSrc = cms.InputTag("unpackedTracksAndVertices"),
+    globalTrackIdxMap = cms.InputTag("dummyValueMap", "globalTrackIdxMap"),
+    model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_newother_1407.onnx"),
+    maxTracks = cms.uint32(32),
+    maxEdges = cms.uint32(128),
+    dlenSigMin = cms.double(3.0),
+    includeNearbyTracks = cms.bool(True),
+    nearbyTrackDR = cms.double(0.4),
+    nearbyTrackPtMin = cms.double(0.8),
+    nearbyTrackEtaMax = cms.double(2.5),
+    maxExtraTracks = cms.int32(5),
+    requireExtraHighPurity = cms.bool(True),
+    debug = cms.untracked.bool(False)
+)
+
 
 # Missing cut in dlen and dlenSig
 # Missing cut in dlen and dlenSig
@@ -120,6 +138,7 @@ def custom_sv_tracks(process, threshold_value=0.0):
     process.myFinalInclusiveSecondaryVertices = myFinalInclusiveSecondaryVertices
     process.svTable = svTable
     process.svGNN = svGraphGNNInference.clone()
+    process.svVertexGNN = svGraphVertexGNNInference.clone()
     process.dummyValueMap = dummyValueMap.clone(
           threshold = cms.double(threshold_value)
       )
@@ -132,4 +151,5 @@ def custom_sv_tracks(process, threshold_value=0.0):
                                         process.svTable)
 
     process.sv_track += process.svGNN
+    process.sv_track += process.svVertexGNN
     return process
