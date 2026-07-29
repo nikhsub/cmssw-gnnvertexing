@@ -119,7 +119,7 @@ svGraphGNNInference = cms.EDProducer("SVGraphGNNInferenceProducer",
     model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_0106.onnx"),
     maxTracks = cms.uint32(16),
     maxEdges = cms.uint32(128),
-    dlenSigMin = cms.double(3.0),
+    dlenSigMin = cms.double(0.0),
     debug = cms.untracked.bool(False)
 )
 
@@ -131,7 +131,7 @@ svGraphVertexGNNInference = cms.EDProducer("SVGraphVertexGNNInferenceProducer",
     model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_newother_1407.onnx"),
     maxTracks = cms.uint32(32),
     maxEdges = cms.uint32(128),
-    dlenSigMin = cms.double(3.0),
+    dlenSigMin = cms.double(0.0),
     includeNearbyTracks = cms.bool(True),
     nearbyTrackDR = cms.double(0.4),
     nearbyTrackPtMin = cms.double(0.8),
