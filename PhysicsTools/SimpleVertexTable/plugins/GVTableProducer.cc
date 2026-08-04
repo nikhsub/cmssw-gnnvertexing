@@ -227,7 +227,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         for(size_t i=0; i<genParticles->size(); ++i){
             const reco::Candidate* hadron = &(*genParticles)[i];
             //std::cout<<"Hadron "<<i<<" PDG ID: "<<hadron->pdgId()<<", pt: "<<hadron->pt()<<", eta: "<<hadron->eta()<<std::endl;
-            if(!(hadron->pt()>10 && std::abs(hadron->eta())<2.5)) continue;
+            if(!(hadron->pt()>2 && std::abs(hadron->eta())<2.5)) continue;
 
             int hadPDG = checkPDG(std::abs(hadron->pdgId())); // 1: Beauty, 2: Charmed, 3: Strange,  4: Tau,  0: Else
             if(hadPDG==0) continue;

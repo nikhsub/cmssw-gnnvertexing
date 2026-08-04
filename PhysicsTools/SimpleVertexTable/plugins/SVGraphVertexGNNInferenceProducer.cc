@@ -440,13 +440,22 @@ void SVGraphVertexGNNInferenceProducer::produce(edm::Event& iEvent, const edm::E
     const auto& ttBuilder = iSetup.getData(ttbToken_);
     int keptSvIdx = 0;
     candidates.reserve(svs->size());
-    for (const auto& sv : *svs) {
-      auto cand = makeCandidate(sv, *pvs, keptSvIdx, tracks, *globalIdxMap, ttBuilder);
+
+    for (std::size_t svIdx = 0; svIdx < svs->size(); ++svIdx) {
+      auto cand = makeCandidate(
+          svs->at(svIdx),
+          *pvs,
+          static_cast<int>(svIdx),
+          tracks,
+          *globalIdxMap,
+          ttBuilder
+      );
+    
       if (cand.valid) {
         candidates.emplace_back(std::move(cand));
-        ++keptSvIdx;
       }
-    }
+}
+    
   }
   const std::size_t nCand = candidates.size();
   std::vector<int> outSvIdx;
