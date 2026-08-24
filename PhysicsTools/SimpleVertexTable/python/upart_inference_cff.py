@@ -92,6 +92,7 @@ def add_upart_v1_inference(
     # Basic jet variables and generator-truth flavor labels.
     # ---------------------------------------------------------
     variables = cms.PSet(
+        
         pt=Var(
             "pt",
             float,
@@ -172,6 +173,83 @@ def add_upart_v1_inference(
             ),
             bool,
             doc="Light-flavor jet matched to a u, d, or s quark",
+        ),
+        genJetPt=Var(
+            (
+                "? genJetFwdRef().isNonnull() && "
+                "genJetFwdRef().isAvailable() "
+                "? genJet().pt() "
+                ": -1"
+            ),
+            float,
+            precision=10,
+            doc="Matched generator-jet transverse momentum; -1 if absent",
+        ),
+
+        genJetEta=Var(
+            (
+                "? genJetFwdRef().isNonnull() && "
+                "genJetFwdRef().isAvailable() "
+                "? genJet().eta() "
+                ": 0"
+            ),
+            float,
+            precision=10,
+            doc="Matched generator-jet pseudorapidity",
+        ),
+
+        genJetPhi=Var(
+            (
+                "? genJetFwdRef().isNonnull() && "
+                "genJetFwdRef().isAvailable() "
+                "? genJet().phi() "
+                ": 0"
+            ),
+            float,
+            precision=10,
+            doc="Matched generator-jet azimuth",
+        ),
+
+        genJetMass=Var(
+            (
+                "? genJetFwdRef().isNonnull() && "
+                "genJetFwdRef().isAvailable() "
+                "? genJet().mass() "
+                ": -1"
+            ),
+            float,
+            precision=10,
+            doc="Matched generator-jet mass; -1 if absent",
+        ),
+        #-----------------------------------------------------
+        # Generator-jet association carried by the PAT jet.
+        #
+        # genJetIdx is the key in the slimmedGenJets collection.
+        # It can therefore be compared directly to GV_genJetIdx,
+        # provided the GV-side JetFlavourInfo producer also uses
+        # slimmedGenJets and stores jetRef.key().
+        # -----------------------------------------------------
+        hasGenJet=Var(
+            (
+                "genJetFwdRef().isNonnull() && "
+                "genJetFwdRef().isAvailable()"
+            ),
+            bool,
+            doc="One if this reconstructed PAT jet has an available matched generator jet",
+        ),
+
+        genJetIdx=Var(
+            (
+                "? genJetFwdRef().isNonnull() && "
+                "genJetFwdRef().isAvailable() "
+                "? genJetFwdRef().key() "
+                ": -1"
+            ),
+            int,
+            doc=(
+                "Index of the matched generator jet in the "
+                "slimmedGenJets collection; -1 if absent"
+            ),
         ),
     )
 
@@ -263,5 +341,3 @@ def add_upart_v1_inference(
     )
 
     return process 
-
-    return process

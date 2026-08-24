@@ -112,25 +112,25 @@ svTable = cms.EDProducer("SVTableProducer",
                         dlenSigMin = cms.double(0.0))
 
 
-svGraphGNNInference = cms.EDProducer("SVGraphGNNInferenceProducer",
-    src = cms.InputTag("myFinalInclusiveSecondaryVertices"),
-    pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
-    trackSrc = cms.InputTag("unpackedTracksAndVertices"),
-    model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_0106.onnx"),
-    maxTracks = cms.uint32(16),
-    maxEdges = cms.uint32(128),
-    dlenSigMin = cms.double(0.0),
-    debug = cms.untracked.bool(False)
-)
+#svGraphGNNInference = cms.EDProducer("SVGraphGNNInferenceProducer",
+#    src = cms.InputTag("myFinalInclusiveSecondaryVertices"),
+#    pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
+#    trackSrc = cms.InputTag("unpackedTracksAndVertices"),
+#    model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_0106.onnx"),
+#    maxTracks = cms.uint32(16),
+#    maxEdges = cms.uint32(128),
+#    dlenSigMin = cms.double(0.0),
+#    debug = cms.untracked.bool(False)
+#)
 
 svGraphVertexGNNInference = cms.EDProducer("SVGraphVertexGNNInferenceProducer",
     src = cms.InputTag("myFinalInclusiveSecondaryVertices"),
     pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
     trackSrc = cms.InputTag("unpackedTracksAndVertices"),
     globalTrackIdxMap = cms.InputTag("dummyValueMap", "globalTrackIdxMap"),
-    model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_newother_1407.onnx"),
-    maxTracks = cms.uint32(32),
-    maxEdges = cms.uint32(128),
+    model_path = cms.FileInPath("PhysicsTools/data/vertex_gnn_hplustrain_forctag_1708.onnx"),
+    maxTracks = cms.uint32(12),
+    maxEdges = cms.uint32(48),
     dlenSigMin = cms.double(0.0),
     includeNearbyTracks = cms.bool(True),
     nearbyTrackDR = cms.double(0.4),
@@ -214,7 +214,7 @@ def custom_sv_tracks(process, threshold_values=(0.0, 0., 0.), f1=0.7, minSig1=2,
     minSignificance = cms.double(minSig2)
   )
   process.svTable = svTable
-  process.svGNN = svGraphGNNInference.clone()
+  #process.svGNN = svGraphGNNInference.clone()
   process.svVertexGNN = svGraphVertexGNNInference.clone()
   process.dummyValueMap = dummyValueMap
   process.trackGenMatch = trackGenMatch
@@ -231,6 +231,6 @@ def custom_sv_tracks(process, threshold_values=(0.0, 0., 0.), f1=0.7, minSig1=2,
                                       process.trackGenMatch*
                                       process.trackTable
                                       )
-  process.sv_track += process.svGNN
+  #process.sv_track += process.svGNN
   process.sv_track += process.svVertexGNN
   return process

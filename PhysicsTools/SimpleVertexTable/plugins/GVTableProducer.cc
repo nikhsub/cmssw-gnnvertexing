@@ -8,6 +8,9 @@
 #include "DataFormats/Math/interface/deltaR.h"
 #include "DataFormats/VertexReco/interface/Vertex.h"
 #include "DataFormats/TrackReco/interface/Track.h"
+#include "DataFormats/JetMatching/interface/JetFlavourInfoMatching.h"
+#include "DataFormats/JetReco/interface/Jet.h"
+#include <unordered_map>
 #include "TLorentzVector.h"
 #include "RecoVertex/VertexTools/interface/VertexDistance3D.h"
 #include "RecoVertex/VertexTools/interface/VertexDistanceXY.h"
@@ -91,12 +94,20 @@ private:
                                                                         double maxDPtRel,
                                                                         bool checkCharge,
                                                                         bool resolveAmbiguities) const;
+	
+    int findMatchingPrunedHadron(
+	    const reco::Candidate* mergedHadron,
+	    const reco::GenParticleCollection& prunedParticles
+	) const;
 
     const edm::EDGetTokenT<std::vector<reco::Vertex>> pvs_;
     edm::EDGetTokenT<edm::View<reco::Candidate>> genToken_;
+    edm::EDGetTokenT<reco::GenParticleCollection> prunedGenToken_;
     edm::EDGetTokenT<std::vector<reco::Vertex>> svToken_;
     edm::EDGetTokenT<std::vector<reco::Track>> tracksToken_;  // NEW: general tracks used for GVDaughters matching
+    edm::EDGetTokenT<reco::JetFlavourInfoMatchingCollection> jetFlavourInfosToken_;
     int nRequiredCommonTracks_;
+    double hadPt_min_;
     double dlenSigMin_;
     double dR_max_;
     double relPt_max_;
@@ -116,10 +127,22 @@ private:
 
 GenVertexProducer::GenVertexProducer(const edm::ParameterSet& iConfig):
     pvs_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("pvSrc"))),
-    genToken_(consumes<edm::View<reco::Candidate>>(iConfig.getParameter<edm::InputTag>("genParticles"))),
+        genToken_(
+        consumes<edm::View<reco::Candidate>>(
+            iConfig.getParameter<edm::InputTag>("genParticles")
+        )
+    ),
+    
+    prunedGenToken_(
+        consumes<reco::GenParticleCollection>(
+            iConfig.getParameter<edm::InputTag>("prunedGenParticles")
+        )
+    ),
     svToken_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("secondaryVertices"))),
     tracksToken_(consumes<std::vector<reco::Track>>(iConfig.getParameter<edm::InputTag>("tracks"))),
+    jetFlavourInfosToken_(consumes<reco::JetFlavourInfoMatchingCollection>(iConfig.getParameter<edm::InputTag>("jetFlavourInfos"))),
     nRequiredCommonTracks_(iConfig.getParameter<int>("nRequiredCommonTracks")),
+    hadPt_min_(iConfig.getParameter<double>("hadPt_min")),
     dlenSigMin_(iConfig.getParameter<double>("dlenSigMin")),
     dR_max_(iConfig.getParameter<double>("dR_max")),
     relPt_max_(iConfig.getParameter<double>("relPt_max")),
@@ -146,15 +169,19 @@ GenVertexProducer::GenVertexProducer(const edm::ParameterSet& iConfig):
 void GenVertexProducer::produce(edm::Event& iEvent,
              const edm::EventSetup&) 
     {
+	edm::Handle<reco::JetFlavourInfoMatchingCollection> jetFlavourInfosHandle;
+	iEvent.getByToken(jetFlavourInfosToken_, jetFlavourInfosHandle);
         edm::Handle<edm::View<reco::Candidate>> genHandle;
         iEvent.getByToken(genToken_, genHandle);
+	edm::Handle<reco::GenParticleCollection> prunedGenHandle;
+	iEvent.getByToken(prunedGenToken_, prunedGenHandle);
         edm::Handle<std::vector<reco::Vertex>> svHandle;
         iEvent.getByToken(svToken_, svHandle);
         auto pvsIn = iEvent.getHandle(pvs_);
         edm::Handle<std::vector<reco::Track>> tracksHandle;   // NEW
         iEvent.getByToken(tracksToken_, tracksHandle);
 
-        if (!genHandle.isValid() || !svHandle.isValid() || !pvsIn.isValid() ||
+        if (!genHandle.isValid() ||!prunedGenHandle.isValid()|| !svHandle.isValid() || !pvsIn.isValid() ||
             pvsIn->empty() || !tracksHandle.isValid()) {
             iEvent.put(std::make_unique<nanoaod::FlatTable>(0, "GV", false), "GVTable");
             iEvent.put(std::make_unique<nanoaod::FlatTable>(0, "RejectedGV", false), "rejectedGVTable");
@@ -166,11 +193,42 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         }
 
         const auto& genParticles = genHandle;
+	const auto& prunedGenParticles = *prunedGenHandle;
         const auto& secondaryVertices = svHandle;
         const auto& tracks = *tracksHandle;                   // NEW
+	const bool hasJetFlavourInfos = jetFlavourInfosHandle.isValid();
+
+	struct GenJetMatchInfo {
+	    int jetIdx = -1;
+	
+	    float pt = -1.f;
+	    float eta = 0.f;
+	    float phi = 0.f;
+	    float mass = -1.f;
+	
+	    int hadronFlavour = 0;
+	    int partonFlavour = 0;
+	    int nCHadrons = 0;
+	    int nBHadrons = 0;
+	};
 
         // Output vectors
         std::vector<float> Hadron_pt, Hadron_eta, Hadron_phi;
+	std::vector<int> Hadron_mergedGenPartIdx;
+	std::vector<int> Hadron_prunedGenPartIdx;
+	std::vector<int> Hadron_genJetIdx;
+	std::vector<int> Hadron_hasGenJet;
+	
+	std::vector<float> Hadron_genJetPt;
+	std::vector<float> Hadron_genJetEta;
+	std::vector<float> Hadron_genJetPhi;
+	std::vector<float> Hadron_genJetMass;
+	std::vector<float> Hadron_genJetDeltaR;
+	
+	std::vector<int> Hadron_genJetHadronFlavour;
+	std::vector<int> Hadron_genJetPartonFlavour;
+	std::vector<int> Hadron_genJetNCHadrons;
+	std::vector<int> Hadron_genJetNBHadrons;
         std::vector<float> SV_x, SV_y, SV_z, SV_eta, SV_phi;
         std::vector<CovMatrix> SV_cov;
         std::vector<float> Hadron_GVx, Hadron_GVy, Hadron_GVz;
@@ -191,12 +249,92 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         std::vector<float> allHadron_GVx, allHadron_GVy, allHadron_GVz;
         std::vector<float>  allHadron_GVx_i, allHadron_GVy_i, allHadron_GVz_i;
         std::vector<int> allHadron_pdgId;
+	std::vector<int> allHadron_isB, allHadron_isD, allHadron_isBtoD;
         std::vector<float> allHadron_pt, allHadron_eta, allHadron_phi;
+	std::vector<int> allHadron_mergedGenPartIdx;
+	std::vector<int> allHadron_prunedGenPartIdx;
+	std::vector<int> allHadron_genJetIdx;
+	std::vector<int> allHadron_hasGenJet;
+	
+	std::vector<float> allHadron_genJetPt;
+	std::vector<float> allHadron_genJetEta;
+	std::vector<float> allHadron_genJetPhi;
+	std::vector<float> allHadron_genJetDeltaR;
+
+	std::vector<int> Hadron_hasPrunedGenMatch;
+	std::vector<int> allHadron_hasPrunedGenMatch;
 
         std::vector<float> directDaughters_pt, directDaughters_eta, directDaughters_phi;
         std::vector<int> directDaughters_charge, directDaughters_GVidx, directDaughters_pdgId;
         VertexDistance3D vdist;
         const auto& PV0 = pvsIn->front();
+
+	std::unordered_map<unsigned int, GenJetMatchInfo> genParticleToJet;
+
+	if (hasJetFlavourInfos) {
+	    for (size_t iJet = 0; iJet < jetFlavourInfosHandle->size(); ++iJet) {
+	        const auto jetAndFlavour = (*jetFlavourInfosHandle)[iJet];
+	
+	        const auto& jetRef = jetAndFlavour.first;
+	        const auto& flavourInfo = jetAndFlavour.second;
+	
+	        if (jetRef.isNull()) {
+	            continue;
+	        }
+	
+	        GenJetMatchInfo info;
+		info.jetIdx = static_cast<int>(jetRef.key());
+	
+	        info.pt = jetRef->pt();
+	        info.eta = jetRef->eta();
+	        info.phi = jetRef->phi();
+	        info.mass = jetRef->mass();
+	
+	        info.hadronFlavour = flavourInfo.getHadronFlavour();
+	        info.partonFlavour = flavourInfo.getPartonFlavour();
+	        info.nCHadrons =
+	            static_cast<int>(flavourInfo.getcHadrons().size());
+	        info.nBHadrons =
+	            static_cast<int>(flavourInfo.getbHadrons().size());
+	
+	        for (const auto& cHadronRef : flavourInfo.getcHadrons()) {
+	            if (cHadronRef.isNull()) {
+	                continue;
+	            }
+	
+	            const unsigned int genPartIdx = cHadronRef.key();
+	
+	            const auto existing = genParticleToJet.find(genPartIdx);
+	
+	            if (existing == genParticleToJet.end()) {
+	                genParticleToJet.emplace(genPartIdx, info);
+	            } else {
+	                // This should normally not happen. Retain the harder jet
+	                // deterministically if the same hadron appears more than once.
+	                if (info.pt > existing->second.pt) {
+	                    existing->second = info;
+	                }
+	            }
+	        }
+	
+	        // Also map B hadrons, since your GV collection contains B GVs.
+	        for (const auto& bHadronRef : flavourInfo.getbHadrons()) {
+	            if (bHadronRef.isNull()) {
+	                continue;
+	            }
+	
+	            const unsigned int genPartIdx = bHadronRef.key();
+	
+	            const auto existing = genParticleToJet.find(genPartIdx);
+	
+	            if (existing == genParticleToJet.end()) {
+	                genParticleToJet.emplace(genPartIdx, info);
+	            } else if (info.pt > existing->second.pt) {
+	                existing->second = info;
+	            }
+	        }
+	    }
+	}
 
         // save coordinates of SV (will be used for matching with GV)
         for (auto const& sv : *secondaryVertices) {
@@ -227,7 +365,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         for(size_t i=0; i<genParticles->size(); ++i){
             const reco::Candidate* hadron = &(*genParticles)[i];
             //std::cout<<"Hadron "<<i<<" PDG ID: "<<hadron->pdgId()<<", pt: "<<hadron->pt()<<", eta: "<<hadron->eta()<<std::endl;
-            if(!(hadron->pt()>2 && std::abs(hadron->eta())<2.5)) continue;
+            if(!(hadron->pt()>hadPt_min_ && std::abs(hadron->eta())<2.5)) continue;
 
             int hadPDG = checkPDG(std::abs(hadron->pdgId())); // 1: Beauty, 2: Charmed, 3: Strange,  4: Tau,  0: Else
             if(hadPDG==0) continue;
@@ -252,7 +390,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
             for(size_t j=0; j<genParticles->size(); ++j){
                 const reco::Candidate* dau = &(*genParticles)[j];
                 if(dau==hadron) continue;
-                if(!(dau->status()==1 && dau->charge()!=0 && dau->pt()>0.8 && std::abs(dau->eta())<2.5)) continue;
+                if(!(dau->status()==1 && dau->charge()!=0 && dau->pt()>0.4 && std::abs(dau->eta())<2.5)) continue;
 
                 auto GV = isAncestor(hadron,dau); //takes the x,y,z of the daughter (decay point of the hadron) if daughters otherwise return nan
                 if(GV.has_value()){
@@ -273,7 +411,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                 }
             }
             // If has more than 2 good daughters, the Hadron is Good, we found a GV:
-            if(nPack>=2){
+            if(nPack>=1){
                 // Save hadron info
                 //std::cout<<"Found hadron "<<ngv<<" PDG ID: "<<hadron->pdgId()<<", pt: "<<hadron->pt()<<", eta: "<<hadron->eta()<<std::endl;
                 Hadron_pt.push_back(hadron->pt());
@@ -281,6 +419,68 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                 Hadron_phi.push_back(hadron->phi());
                 Hadron_pdgId.push_back(hadron->pdgId());
                 Hadron_pdgClass.push_back(hadPDG);
+
+		const int mergedGenPartIdx = static_cast<int>(i);
+
+		const int prunedGenPartIdx =
+		    findMatchingPrunedHadron(
+		        hadron,
+		        prunedGenParticles
+		    );
+		
+		Hadron_mergedGenPartIdx.push_back(mergedGenPartIdx);
+		Hadron_prunedGenPartIdx.push_back(prunedGenPartIdx);
+
+		Hadron_hasPrunedGenMatch.push_back(prunedGenPartIdx >= 0 ? 1 : 0);
+		
+		auto jetMatch = genParticleToJet.end();
+		
+		if (prunedGenPartIdx >= 0) {
+		    jetMatch = genParticleToJet.find(
+		        static_cast<unsigned int>(prunedGenPartIdx)
+		    );
+		}
+		
+		if (jetMatch != genParticleToJet.end()) {
+		    const auto& info = jetMatch->second;
+		
+		    Hadron_genJetIdx.push_back(info.jetIdx);
+		    Hadron_hasGenJet.push_back(1);
+		
+		    Hadron_genJetPt.push_back(info.pt);
+		    Hadron_genJetEta.push_back(info.eta);
+		    Hadron_genJetPhi.push_back(info.phi);
+		    Hadron_genJetMass.push_back(info.mass);
+		
+		    Hadron_genJetDeltaR.push_back(
+		        deltaR(
+		            static_cast<float>(hadron->eta()),
+		            static_cast<float>(hadron->phi()),
+		            info.eta,
+		            info.phi
+		        )
+		    );
+		
+		    Hadron_genJetHadronFlavour.push_back(info.hadronFlavour);
+		    Hadron_genJetPartonFlavour.push_back(info.partonFlavour);
+		    Hadron_genJetNCHadrons.push_back(info.nCHadrons);
+		    Hadron_genJetNBHadrons.push_back(info.nBHadrons);
+
+		} else {
+		    Hadron_genJetIdx.push_back(-1);
+		    Hadron_hasGenJet.push_back(0);
+		
+		    Hadron_genJetPt.push_back(-1.f);
+		    Hadron_genJetEta.push_back(0.f);
+		    Hadron_genJetPhi.push_back(0.f);
+		    Hadron_genJetMass.push_back(-1.f);
+		    Hadron_genJetDeltaR.push_back(-1.f);
+		
+		    Hadron_genJetHadronFlavour.push_back(0);
+		    Hadron_genJetPartonFlavour.push_back(0);
+		    Hadron_genJetNCHadrons.push_back(0);
+		    Hadron_genJetNBHadrons.push_back(0);
+		}
                 
                 
 
@@ -380,6 +580,20 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                     vy = directDau->vy();
                     vz = directDau->vz();
                 }
+
+		if(hadPDG==1) {
+                    allHadron_isB.push_back(1);
+                    }
+                else{
+                    allHadron_isB.push_back(0);
+                }
+                if(hadPDG==2) {
+                    allHadron_isD.push_back(1);
+                }
+                else{
+                    allHadron_isD.push_back(0);
+                }
+                allHadron_isBtoD.push_back(hadPDG == 2 && hasBHadronAncestor(hadron) ? 1 : 0);
                 nRejectedGV++;
                 allHadron_pt.push_back(hadron->pt());
                 allHadron_eta.push_back(hadron->eta());
@@ -391,6 +605,59 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                 allHadron_GVx_i.push_back(hadron->vx());   // point of origin of the hadron
                 allHadron_GVy_i.push_back(hadron->vy());   // point of origin of the hadron
                 allHadron_GVz_i.push_back(hadron->vz());   // point of origin of the hadron
+	
+		const int mergedGenPartIdx = static_cast<int>(i);
+		
+		const int prunedGenPartIdx =
+		    findMatchingPrunedHadron(
+		        hadron,
+		        prunedGenParticles
+		    );
+		
+		allHadron_mergedGenPartIdx.push_back(
+		    mergedGenPartIdx
+		);
+		
+		allHadron_prunedGenPartIdx.push_back(prunedGenPartIdx);
+
+		allHadron_hasPrunedGenMatch.push_back(prunedGenPartIdx >= 0 ? 1 : 0);
+		
+		auto jetMatch = genParticleToJet.end();
+		
+		if (prunedGenPartIdx >= 0) {
+		    jetMatch = genParticleToJet.find(
+		        static_cast<unsigned int>(prunedGenPartIdx)
+		    );
+		}
+		
+                if (jetMatch != genParticleToJet.end()) {
+                    const auto& info = jetMatch->second;
+
+                    allHadron_genJetIdx.push_back(info.jetIdx);
+                    allHadron_hasGenJet.push_back(1);
+
+                    allHadron_genJetPt.push_back(info.pt);
+                    allHadron_genJetEta.push_back(info.eta);
+                    allHadron_genJetPhi.push_back(info.phi);
+
+                    allHadron_genJetDeltaR.push_back(
+                        deltaR(
+                            static_cast<float>(hadron->eta()),
+                            static_cast<float>(hadron->phi()),
+                            info.eta,
+                            info.phi
+                        )
+                    );
+
+                } else {
+                    allHadron_genJetIdx.push_back(-1);
+                    allHadron_hasGenJet.push_back(0);
+
+                    allHadron_genJetPt.push_back(-1.f);
+                    allHadron_genJetEta.push_back(0.f);
+                    allHadron_genJetPhi.push_back(0.f);
+                    allHadron_genJetDeltaR.push_back(-1.f);
+                }
             }
         }
 
@@ -435,6 +702,121 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         std::vector<int> SVtrk_isMatched = std::get<3>(result);
         std::vector<int> SVtrk_GVIdx     = std::get<4>(result);
         std::vector<int> SVtrk_daughterIdx = std::get<5>(result);  // NEW
+
+        // ---------------------------------------------------------------------
+        // NEW DIAGNOSTIC: characterize the spatially closest SV candidate for
+        // every accepted GV BEFORE the greedy one-to-one assignment is applied.
+        //
+        // Important:
+        //   * `distances` in this scope is still the original unmodified matrix,
+        //     because matchHadronsToSV() receives it by value.
+        //   * These quantities are diagnostic only; they do not alter matching.
+        //   * Daughter matching here is one-to-one in the daughter index so that
+        //     one GV daughter cannot be counted multiple times for the same SV.
+        // ---------------------------------------------------------------------
+        std::vector<int> GV_bestCandidateSVIdx(ngv, -1);
+        std::vector<float> GV_bestCandidateDistanceSig(ngv, -1.f);
+        std::vector<int> GV_bestCandidateNCommonTracks(ngv, 0);
+        std::vector<int> GV_bestCandidateNMatchedDaughters(ngv, 0);
+        std::vector<float> GV_bestCandidateMaxTrackDeltaR(ngv, -1.f);
+        std::vector<float> GV_bestCandidateMaxRelPtDiff(ngv, -1.f);
+        std::vector<float> GV_bestCandidateDeltaR(ngv, -1.f);
+        std::vector<int> GV_bestCandidateWasFinalMatch(ngv, 0);
+
+        for (int had = 0; had < ngv; ++had) {
+            float bestDist = 999.f;
+            int bestSV = -1;
+
+            // Find the spatially closest reconstructed SV for this GV using
+            // the original covariance-weighted distance-significance matrix.
+            for (size_t sv = 0; sv < distances.size(); ++sv) {
+                if (had >= static_cast<int>(distances[sv].size())) continue;
+                const float dist = distances[sv][had];
+                if (std::isfinite(dist) && dist < bestDist && dist < 997.f) {
+                    bestDist = dist;
+                    bestSV = static_cast<int>(sv);
+                }
+            }
+
+            if (bestSV < 0) continue;
+
+            GV_bestCandidateSVIdx[had] = bestSV;
+            GV_bestCandidateDistanceSig[had] = bestDist;
+
+            if (bestSV < static_cast<int>(SV_eta.size()) &&
+                had < static_cast<int>(Hadron_eta.size())) {
+                GV_bestCandidateDeltaR[had] =
+                    deltaR(SV_eta[bestSV], SV_phi[bestSV],
+                           Hadron_eta[had], Hadron_phi[had]);
+            }
+
+            // Collect the selected reco tracks belonging to this candidate SV.
+            std::vector<size_t> candidateSVTracks;
+            for (size_t itrk = 0; itrk < SVtrk_SVidx.size(); ++itrk) {
+                if (SVtrk_SVidx[itrk] == bestSV &&
+                    SVtrk_pt[itrk] > 0.4 &&
+                    std::fabs(SVtrk_eta[itrk]) < 2.5) {
+                    candidateSVTracks.push_back(itrk);
+                }
+            }
+
+            // Collect this GV's selected gen daughters.
+            std::vector<size_t> candidateGVDaughters;
+            for (size_t idau = 0; idau < Daughters_GVidx.size(); ++idau) {
+                if (Daughters_GVidx[idau] == had) {
+                    candidateGVDaughters.push_back(idau);
+                }
+            }
+
+            // One-to-one daughter bookkeeping for the diagnostic. Each SV
+            // track can match at most one daughter, and each daughter can be
+            // used at most once.
+            std::vector<bool> daughterUsed(candidateGVDaughters.size(), false);
+
+            int nCommon = 0;
+            float maxMatchedDR = -1.f;
+            float maxMatchedRelPt = -1.f;
+
+            for (size_t itrk : candidateSVTracks) {
+                int bestLocalDau = -1;
+                float bestLocalDR = std::numeric_limits<float>::max();
+                float bestLocalRelPt = -1.f;
+
+                for (size_t ilocal = 0; ilocal < candidateGVDaughters.size(); ++ilocal) {
+                    if (daughterUsed[ilocal]) continue;
+
+                    const size_t idau = candidateGVDaughters[ilocal];
+                    const float dR = deltaR(
+                        SVtrk_eta[itrk], SVtrk_phi[itrk],
+                        Daughters_eta[idau], Daughters_phi[idau]);
+                    const float relPt =
+                        std::fabs(SVtrk_pt[itrk] - Daughters_pt[idau]) /
+                        std::max(Daughters_pt[idau], 1e-6f);
+
+                    if (dR < dR_max_ && relPt < relPt_max_ && dR < bestLocalDR) {
+                        bestLocalDau = static_cast<int>(ilocal);
+                        bestLocalDR = dR;
+                        bestLocalRelPt = relPt;
+                    }
+                }
+
+                if (bestLocalDau >= 0) {
+                    daughterUsed[bestLocalDau] = true;
+                    ++nCommon;
+                    maxMatchedDR = std::max(maxMatchedDR, bestLocalDR);
+                    maxMatchedRelPt = std::max(maxMatchedRelPt, bestLocalRelPt);
+                }
+            }
+
+            GV_bestCandidateNCommonTracks[had] = nCommon;
+            GV_bestCandidateNMatchedDaughters[had] = nCommon;
+            GV_bestCandidateMaxTrackDeltaR[had] = maxMatchedDR;
+            GV_bestCandidateMaxRelPtDiff[had] = maxMatchedRelPt;
+
+            if (Hadron_SVIdx[had] >= 0 && Hadron_SVIdx[had] == bestSV) {
+                GV_bestCandidateWasFinalMatch[had] = 1;
+            }
+        }
         auto svTrkGVTable = std::make_unique<nanoaod::FlatTable>(SVtrk_pt.size(), "mySVtrks", false, true);
         svTrkGVTable->addColumn<int>("isMatched", SVtrk_isMatched, "1 if track is matched to a genParticle daughter of the matched GV");
         svTrkGVTable->addColumn<int>("GVIdx", SVtrk_GVIdx, "Index of matched GenVertex hadron, -1 if unmatched");
@@ -606,6 +988,62 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         rejectedGVTable->addColumn<float>("x_i",allHadron_GVx_i,"Born x coordinate of Rejected GV ");
         rejectedGVTable->addColumn<float>("y_i",allHadron_GVy_i,"Born y coordinate of Rejected GV ");
         rejectedGVTable->addColumn<float>("z_i",allHadron_GVz_i,"Born z coordinate of Rejected GV ");
+	rejectedGVTable->addColumn<int>("isB",allHadron_isB,"isB");
+        rejectedGVTable->addColumn<int>("isD",allHadron_isD,"isD");
+        rejectedGVTable->addColumn<int>("isBtoD",allHadron_isBtoD,"D hadron has a B-hadron ancestor");
+	rejectedGVTable->addColumn<int>(
+	    "mergedGenPartIdx",
+	    allHadron_mergedGenPartIdx,
+	    "Index of this hadron in mergedGenParticles"
+	);
+	
+	rejectedGVTable->addColumn<int>(
+	    "prunedGenPartIdx",
+	    allHadron_prunedGenPartIdx,
+	    "Index of the corresponding hadron in prunedGenParticles; -1 if unmatched"
+	);
+	
+	rejectedGVTable->addColumn<int>(
+	    "genJetIdx",
+	    allHadron_genJetIdx,
+	    "Ghost-associated generator-jet index; -1 if absent"
+	);
+	
+	rejectedGVTable->addColumn<int>(
+	    "hasGenJet",
+	    allHadron_hasGenJet,
+	    "One if the rejected GV hadron is associated with a generator jet"
+	);
+	
+	rejectedGVTable->addColumn<float>(
+	    "genJetPt",
+	    allHadron_genJetPt,
+	    "Associated generator-jet pT; -1 if absent"
+	);
+
+	rejectedGVTable->addColumn<float>(
+	    "genJetEta",
+	    allHadron_genJetEta,
+	    "Eta of associated generator jet"
+	);
+	
+	rejectedGVTable->addColumn<float>(
+	    "genJetPhi",
+	    allHadron_genJetPhi,
+	    "Phi of associated generator jet"
+	);
+	
+	rejectedGVTable->addColumn<float>(
+	    "genJetDeltaR",
+	    allHadron_genJetDeltaR,
+	    "DeltaR to associated generator jet; -1 if absent"
+	);
+	
+	rejectedGVTable->addColumn<int>(
+	    "hasPrunedGenMatch",
+	    allHadron_hasPrunedGenMatch,
+	    "One if merged rejected hadron was matched to prunedGenParticles"
+	);
 
         auto gvTable = std::make_unique<nanoaod::FlatTable>(ngv,"GV",false);
         gvTable->addColumn<float>("pt",Hadron_pt,"Hadron pt");
@@ -632,12 +1070,137 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         gvTable->addColumn<float>("maxDaughterPairDeltaR",GV_maxDaughterPairDeltaR,"Max pairwise deltaR among this GV's own GVDaughters (gen-level, no tracks involved)"); // NEW
         gvTable->addColumn<int>("nDaughtersMatchedToTracks",GV_nDaughtersMatchedToTracks,"Number of GVDaughters of this GV matched to a reconstructed track"); // NEW
         gvTable->addColumn<float>("maxDaughterTrkDeltaR",GV_maxDaughterTrkDeltaR,"Max trkDeltaR among this GV's track-matched GVDaughters (not GVDirectDaughters); -1 if none matched");
-        gvTable->addColumn<int>("nDauNoRecognizedSecondaryAncestor", Hadron_nDauNoRecognizedSecondaryAncestor, "Selected daughters with no recognized secondary ancestor");
-        gvTable->addColumn<int>("nDauFromB", Hadron_nDauFromB, "Selected daughters with B ancestry");
-        gvTable->addColumn<int>("nDauFromBC", Hadron_nDauFromBC, "Selected daughters with B and C ancestry");
-        gvTable->addColumn<int>("nDauFromC", Hadron_nDauFromC, "Selected daughters with C ancestry");
-        gvTable->addColumn<int>("nDauOtherSecondary", Hadron_nDauOtherSecondary, "Selected daughters from strange/tau/conversion-like ancestry");
-        gvTable->addColumn<int>("nDauOriginUnknown", Hadron_nDauOriginUnknown, "Selected daughters with unknown origin");
+
+        // NEW: nearest-SV candidate diagnostics. These are computed from the
+        // original distance matrix and do not affect the final greedy match.
+        //gvTable->addColumn<int>(
+        //    "bestCandidateSVIdx",
+        //    GV_bestCandidateSVIdx,
+        //    "Index of spatially closest reconstructed SV before one-to-one assignment; -1 if none"
+        //);
+        //gvTable->addColumn<float>(
+        //    "bestCandidateDistanceSig",
+        //    GV_bestCandidateDistanceSig,
+        //    "Covariance-weighted distance significance to the spatially closest reconstructed SV; -1 if none"
+        //);
+        //gvTable->addColumn<int>(
+        //    "bestCandidateNCommonTracks",
+        //    GV_bestCandidateNCommonTracks,
+        //    "Number of distinct daughter-track matches between this GV and its spatially closest reconstructed SV"
+        //);
+        //gvTable->addColumn<int>(
+        //    "bestCandidateNMatchedDaughters",
+        //    GV_bestCandidateNMatchedDaughters,
+        //    "Number of distinct GV daughters matched to tracks in the spatially closest reconstructed SV"
+        //);
+        //gvTable->addColumn<float>(
+        //    "bestCandidateMaxTrackDeltaR",
+        //    GV_bestCandidateMaxTrackDeltaR,
+        //    "Maximum daughter-track deltaR among diagnostic matches to the spatially closest reconstructed SV; -1 if none"
+        //);
+        //gvTable->addColumn<float>(
+        //    "bestCandidateMaxRelPtDiff",
+        //    GV_bestCandidateMaxRelPtDiff,
+        //    "Maximum relative pT difference among diagnostic daughter-track matches to the spatially closest reconstructed SV; -1 if none"
+        //);
+        //gvTable->addColumn<float>(
+        //    "bestCandidateDeltaR",
+        //    GV_bestCandidateDeltaR,
+        //    "DeltaR between GV hadron direction and the spatially closest reconstructed SV direction; -1 if none"
+        //);
+        //gvTable->addColumn<int>(
+        //    "bestCandidateWasFinalMatch",
+        //    GV_bestCandidateWasFinalMatch,
+        //    "One if the spatially closest reconstructed SV is also the final assigned SV"
+        //);
+        //gvTable->addColumn<int>("nDauNoRecognizedSecondaryAncestor", Hadron_nDauNoRecognizedSecondaryAncestor, "Selected daughters with no recognized secondary ancestor");
+        //gvTable->addColumn<int>("nDauFromB", Hadron_nDauFromB, "Selected daughters with B ancestry");
+        //gvTable->addColumn<int>("nDauFromBC", Hadron_nDauFromBC, "Selected daughters with B and C ancestry");
+        //gvTable->addColumn<int>("nDauFromC", Hadron_nDauFromC, "Selected daughters with C ancestry");
+        //gvTable->addColumn<int>("nDauOtherSecondary", Hadron_nDauOtherSecondary, "Selected daughters from strange/tau/conversion-like ancestry");
+        //gvTable->addColumn<int>("nDauOriginUnknown", Hadron_nDauOriginUnknown, "Selected daughters with unknown origin");	
+	gvTable->addColumn<int>(
+	    "mergedGenPartIdx",
+	    Hadron_mergedGenPartIdx,
+	    "Index of this GV hadron in mergedGenParticles"
+	);
+	
+	gvTable->addColumn<int>(
+	    "prunedGenPartIdx",
+	    Hadron_prunedGenPartIdx,
+	    "Index of the corresponding hadron in prunedGenParticles; -1 if unmatched"
+	);
+	
+	gvTable->addColumn<int>(
+	    "genJetIdx",
+	    Hadron_genJetIdx,
+	    "Index of the ghost-associated generator jet; -1 if no associated jet"
+	);
+	
+	gvTable->addColumn<int>(
+	    "hasGenJet",
+	    Hadron_hasGenJet,
+	    "One if this hadron is ghost-associated with a generator jet"
+	);
+	
+	gvTable->addColumn<float>(
+	    "genJetPt",
+	    Hadron_genJetPt,
+	    "pT of the ghost-associated generator jet; -1 if absent"
+	);
+	
+	gvTable->addColumn<float>(
+	    "genJetEta",
+	    Hadron_genJetEta,
+	    "Eta of the ghost-associated generator jet"
+	);
+	
+	gvTable->addColumn<float>(
+	    "genJetPhi",
+	    Hadron_genJetPhi,
+	    "Phi of the ghost-associated generator jet"
+	);
+	
+	gvTable->addColumn<float>(
+	    "genJetMass",
+	    Hadron_genJetMass,
+	    "Mass of the ghost-associated generator jet; -1 if absent"
+	);
+	
+	gvTable->addColumn<float>(
+	    "genJetDeltaR",
+	    Hadron_genJetDeltaR,
+	    "DeltaR between the GV hadron and its ghost-associated generator jet"
+	);
+	
+	gvTable->addColumn<int>(
+	    "genJetHadronFlavour",
+	    Hadron_genJetHadronFlavour,
+	    "Hadron flavour assigned to the associated generator jet"
+	);
+	
+	gvTable->addColumn<int>(
+	    "genJetPartonFlavour",
+	    Hadron_genJetPartonFlavour,
+	    "Parton flavour assigned to the associated generator jet"
+	);
+	
+	gvTable->addColumn<int>(
+	    "genJetNCHadrons",
+	    Hadron_genJetNCHadrons,
+	    "Number of ghost-associated charm hadrons in the generator jet"
+	);
+	
+	gvTable->addColumn<int>(
+	    "genJetNBHadrons",
+	    Hadron_genJetNBHadrons,
+	    "Number of ghost-associated bottom hadrons in the generator jet"
+	);
+	gvTable->addColumn<int>(
+	    "hasPrunedGenMatch",
+	    Hadron_hasPrunedGenMatch,
+	    "One if merged GV hadron was matched to prunedGenParticles"
+	);
         
         //
 
@@ -959,7 +1522,7 @@ std::tuple<std::vector<int>, std::vector<float>, std::vector<float>, std::vector
         for (size_t i = 0; i < SVtrk_SVidx.size(); ++i) {
             // among all tracks from all SV, select those from the candidate SV
             //std::cout<<" Track index "<<i<<" SVtrk_SVidx: "<<SVtrk_SVidx[i]<<" SVtrk_pt: "<<SVtrk_pt[i]<<" Best SV :"<<bestSV<<std::endl;
-            if (SVtrk_SVidx[i] == bestSV && SVtrk_pt[i] > 0.8 && std::fabs(SVtrk_eta[i]) < 2.5) {
+            if (SVtrk_SVidx[i] == bestSV && SVtrk_pt[i] > 0.4 && std::fabs(SVtrk_eta[i]) < 2.5) {
                 svTrackIdxs_fromBestSV.push_back(i);
             }
         }
@@ -1045,7 +1608,7 @@ std::tuple<std::vector<int>, std::vector<float>, std::vector<float>, std::vector
             for (size_t i = 0; i < SVtrk_SVidx.size(); ++i) {
                 // among all tracks from all SV, select those from the candidate SV
                 //std::cout<<" Track index "<<i<<" SVtrk_SVidx: "<<SVtrk_SVidx[i]<<" SVtrk_pt: "<<SVtrk_pt[i]<<" Best SV :"<<bestSV<<std::endl;
-                if (SVtrk_SVidx[i] == bestSV && SVtrk_pt[i] > 0.8 && std::fabs(SVtrk_eta[i]) < 2.5) {
+                if (SVtrk_SVidx[i] == bestSV && SVtrk_pt[i] > 0.4 && std::fabs(SVtrk_eta[i]) < 2.5) {
                     svTrackIdxs_fromBestSV.push_back(i);
                 }
             }
@@ -1179,6 +1742,80 @@ GenVertexProducer::matchDaughtersToTracks(
     }
 
     return std::make_tuple(trkIdx, isMatched, matchDeltaR, matchDPtRel);
+}
+
+int GenVertexProducer::findMatchingPrunedHadron(
+    const reco::Candidate* mergedHadron,
+    const reco::GenParticleCollection& prunedParticles
+) const {
+    if (mergedHadron == nullptr) {
+        return -1;
+    }
+
+    int bestIdx = -1;
+    float bestScore = std::numeric_limits<float>::max();
+
+    for (size_t i = 0; i < prunedParticles.size(); ++i) {
+        const reco::GenParticle& pruned = prunedParticles[i];
+
+        if (pruned.pdgId() != mergedHadron->pdgId()) {
+            continue;
+        }
+
+        if (pruned.status() != mergedHadron->status()) {
+            continue;
+        }
+
+        const float dR = deltaR(
+            static_cast<float>(mergedHadron->eta()),
+            static_cast<float>(mergedHadron->phi()),
+            static_cast<float>(pruned.eta()),
+            static_cast<float>(pruned.phi())
+        );
+
+        const float relPt =
+            std::abs(
+                static_cast<float>(mergedHadron->pt()) -
+                static_cast<float>(pruned.pt())
+            ) /
+            std::max(
+                static_cast<float>(mergedHadron->pt()),
+                1.0e-6f
+            );
+
+        const float dx =
+            static_cast<float>(mergedHadron->vx() - pruned.vx());
+        const float dy =
+            static_cast<float>(mergedHadron->vy() - pruned.vy());
+        const float dz =
+            static_cast<float>(mergedHadron->vz() - pruned.vz());
+
+        const float vertexDistance =
+            std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        // MergedGenParticleProducer copies pruned particles, so these
+        // differences should normally be extremely small or exactly zero.
+        if (dR > 1.0e-5f) {
+            continue;
+        }
+
+        if (relPt > 1.0e-5f) {
+            continue;
+        }
+
+        if (vertexDistance > 1.0e-5f) {
+            continue;
+        }
+
+        const float score = dR + relPt + vertexDistance;
+
+        if (score < bestScore) {
+            bestScore = score;
+            bestIdx = static_cast<int>(i);
+        }
+    }
+
+    return bestIdx;
 }
 
 

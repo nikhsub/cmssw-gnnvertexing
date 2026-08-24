@@ -116,7 +116,7 @@ SVGraphVertexGNNInferenceProducer::SVGraphVertexGNNInferenceProducer(const edm::
     globalTrackIdxToken_(consumes<edm::ValueMap<int>>(iConfig.getParameter<edm::InputTag>("globalTrackIdxMap"))),
     ttbToken_(esConsumes<TransientTrackBuilder, TransientTrackRecord>(edm::ESInputTag("", "TransientTrackBuilder"))),
     inputNames_({"trk", "edg", "eidx", "trk_valid", "edge_valid", "glb"}),
-    outputNames_({"flavor_logits", "flavor_probs", "reliability_logits", "reliability_score", "valid_graph_mask"}),
+    outputNames_({"flavor_logits", "flavor_probs", "reliability_logits", "reliability_score"}),
     maxTracks_(iConfig.getParameter<unsigned int>("maxTracks")),
     maxEdges_(iConfig.getParameter<unsigned int>("maxEdges")),
     dlenSigMin_(iConfig.getParameter<double>("dlenSigMin")),
@@ -460,7 +460,7 @@ void SVGraphVertexGNNInferenceProducer::produce(edm::Event& iEvent, const edm::E
   const std::size_t nCand = candidates.size();
   std::vector<int> outSvIdx;
   outSvIdx.reserve(nCand);
-  std::vector<int> outValidGraph(nCand, 0), outPredClass(nCand, -1);
+  std::vector<int> outPredClass(nCand, -1);
   std::vector<float> outProbB(nCand, -1.f),
                      outProbDPrompt(nCand, -1.f),
                      outProbDFromB(nCand, -1.f),
@@ -489,18 +489,16 @@ void SVGraphVertexGNNInferenceProducer::produce(edm::Event& iEvent, const edm::E
         {batchSize, static_cast<int64_t>(maxEdges_)},
         {batchSize, static_cast<int64_t>(kNGlobalFeatures)}};
     const auto outputs = globalCache()->run(inputNames_, inputValues, inputShapes, outputNames_, batchSize);
-    if (outputs.size() != 5)
+    if (outputs.size() != 4)
       throw cms::Exception("RuntimeError") << "GraphVertexGNN returned " << outputs.size() << " outputs, expected 5";
     const auto& probs = outputs[1];
     const auto& relLogits = outputs[2];
     const auto& relScores = outputs[3];
-    const auto& validMask = outputs[4];
-    if (probs.size() != nCand * kNClasses || relLogits.size() != nCand || relScores.size() != nCand ||
-        validMask.size() != nCand)
+    //const auto& validMask = outputs[4];
+    if (probs.size() != nCand * kNClasses || relLogits.size() != nCand || relScores.size() != nCand)
       throw cms::Exception("RuntimeError") << "GraphVertexGNN output shape mismatch";
     for (std::size_t i = 0; i < nCand; ++i) {
       const std::size_t base = i * kNClasses;
-      outValidGraph[i] = validMask[i] > 0.5f ? 1 : 0;
       outProbB[i] = probs[base];
       outProbDPrompt[i] = probs[base + 1];
       outProbDFromB[i] = probs[base + 2];
@@ -515,7 +513,6 @@ void SVGraphVertexGNNInferenceProducer::produce(edm::Event& iEvent, const edm::E
   }
   auto table = std::make_unique<nanoaod::FlatTable>(outSvIdx.size(), "SVGraphVertexGNN", false);
   table->addColumn<int>("svIdx", outSvIdx, "Original secondary-vertex index in the input collection");
-  table->addColumn<int>("validGraph", outValidGraph, "ONNX valid graph mask");
   table->addColumn<int>("predClass", outPredClass, "Argmax flavor class: 0=isB, 1=isD_prompt, 2=isD_fromB, 3=isOther");
   table->addColumn<float>("prob_isB", outProbB, "GraphVertexGNN probability for class isB");
   table->addColumn<float>("prob_isD_prompt", outProbDPrompt, "GraphVertexGNN probability for class isD_prompt");
