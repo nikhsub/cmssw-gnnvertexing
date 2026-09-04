@@ -46,6 +46,7 @@ private:
     int checkPDG(int abs_pdg) const;
 
     std::optional<std::tuple<float, float, float>>isAncestor(const reco::Candidate* mother,const reco::Candidate* daughter) const;
+    bool isNotFinalCopy(const reco::Candidate* particle) const;
     bool hasHFAncestor(const reco::Candidate* hadron) const;
     bool hasHFDescendant(const reco::Candidate* hadron) const;
     bool hasBHadronAncestor(const reco::Candidate* hadron) const;
@@ -365,20 +366,16 @@ void GenVertexProducer::produce(edm::Event& iEvent,
         for(size_t i=0; i<genParticles->size(); ++i){
             const reco::Candidate* hadron = &(*genParticles)[i];
             //std::cout<<"Hadron "<<i<<" PDG ID: "<<hadron->pdgId()<<", pt: "<<hadron->pt()<<", eta: "<<hadron->eta()<<std::endl;
-            if(!(hadron->pt()>hadPt_min_ && std::abs(hadron->eta())<2.5)) continue;
+            //if(!(hadron->pt()>hadPt_min_ && std::abs(hadron->eta())<2.5)) continue;
+            if(!(hadron->pt()>hadPt_min_)) continue;
 
             int hadPDG = checkPDG(std::abs(hadron->pdgId())); // 1: Beauty, 2: Charmed, 3: Strange,  4: Tau,  0: Else
             if(hadPDG==0) continue;
-            //     code here
-            //    
-            //    
-            //    
-            //    
-            //  
 
-                
-
-
+	    if (isNotFinalCopy(hadron)) {
+        	continue;
+    	    }
+                            
             //  Collect stable charged daughters
             std::vector<float> temp_pt, temp_eta, temp_phi, temp_vx, temp_vy, temp_vz; // kinematics of gen daughters of the hadron in the loop
             std::vector<int> temp_charge, temp_GVidx, temp_flav, temp_pdgId, temp_originLabel;
@@ -390,7 +387,8 @@ void GenVertexProducer::produce(edm::Event& iEvent,
             for(size_t j=0; j<genParticles->size(); ++j){
                 const reco::Candidate* dau = &(*genParticles)[j];
                 if(dau==hadron) continue;
-                if(!(dau->status()==1 && dau->charge()!=0 && dau->pt()>0.4 && std::abs(dau->eta())<2.5)) continue;
+                //if(!(dau->status()==1 && dau->charge()!=0 && dau->pt()>0.4 && std::abs(dau->eta())<2.5)) continue;
+                if(!(dau->status()==1 && dau->charge()!=0 && dau->pt()>0.1)) continue;
 
                 auto GV = isAncestor(hadron,dau); //takes the x,y,z of the daughter (decay point of the hadron) if daughters otherwise return nan
                 if(GV.has_value()){
@@ -411,7 +409,7 @@ void GenVertexProducer::produce(edm::Event& iEvent,
                 }
             }
             // If has more than 2 good daughters, the Hadron is Good, we found a GV:
-            if(nPack>=1){
+            if(nPack>=0){
                 // Save hadron info
                 //std::cout<<"Found hadron "<<ngv<<" PDG ID: "<<hadron->pdgId()<<", pt: "<<hadron->pt()<<", eta: "<<hadron->eta()<<std::endl;
                 Hadron_pt.push_back(hadron->pt());
@@ -1363,6 +1361,30 @@ std::optional<std::tuple<float, float, float>> GenVertexProducer::isAncestor(con
     return std::nullopt;
 }
 
+bool GenVertexProducer::isNotFinalCopy(
+    const reco::Candidate* particle
+) const {
+    if (particle == nullptr) {
+        return false;
+    }
+
+    const int absPdgId = std::abs(particle->pdgId());
+
+    for (size_t i = 0; i < particle->numberOfDaughters(); ++i) {
+        const reco::Candidate* daughter = particle->daughter(i);
+
+        if (daughter == nullptr || daughter == particle) {
+            continue;
+        }
+
+        if (std::abs(daughter->pdgId()) == absPdgId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 
 std::vector<std::vector<float>> GenVertexProducer::computeDistanceMatrix(
                 const std::vector<float>& SV_x,
@@ -1583,7 +1605,8 @@ std::tuple<std::vector<int>, std::vector<float>, std::vector<float>, std::vector
 
 
     //printDistanceMatrix(distances);
-    if (doubleMatching){
+    if (doubleMatching)
+    {
 
         while (true){
             float minDist = 999.0;

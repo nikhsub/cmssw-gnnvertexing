@@ -1,3 +1,4 @@
+#include <string>
 #include "FWCore/Framework/interface/global/EDProducer.h"
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
@@ -23,22 +24,32 @@ public:
 private:
     edm::EDGetTokenT<std::vector<reco::Vertex>> svToken;
     edm::EDGetTokenT<std::vector<reco::Vertex>> pvs_;
-    double dlenSigMin_;  
+    double dlenSigMin_;
+    std::string tableName_;
+    std::string trackTableName_;
+    std::string pvTableName_;
+    bool applySelection_;
+    bool savePV_;
     edm::ESGetToken<TransientTrackBuilder, TransientTrackRecord> theTTBToken;
     //edm::EDGetTokenT<edm::ValueMap<float>> svscoreToken_;
 };
 
-SVTableProducer::SVTableProducer(const edm::ParameterSet &iConfig): 
+SVTableProducer::SVTableProducer(const edm::ParameterSet &iConfig):
     svToken(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("src"))),
     pvs_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("pvSrc"))),
     dlenSigMin_(iConfig.getParameter<double>("dlenSigMin")),
+    tableName_(iConfig.getParameter<std::string>("tableName")),
+    trackTableName_(iConfig.getParameter<std::string>("trackTableName")),
+    pvTableName_(iConfig.getParameter<std::string>("pvTableName")),
+    applySelection_(iConfig.getParameter<bool>("applySelection")),
+    savePV_(iConfig.getParameter<bool>("savePV")),
     theTTBToken(esConsumes<TransientTrackBuilder, TransientTrackRecord>(edm::ESInputTag("", "TransientTrackBuilder")))
-    //svscoreToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("pvSrc")))
 {
     produces<nanoaod::FlatTable>("SVTable");
     produces<nanoaod::FlatTable>("SVtrksTable");
-    produces<nanoaod::FlatTable>("PVTable");   // <-- new
-
+    if (savePV_) {
+        produces<nanoaod::FlatTable>("PVTable");
+    }
 }
 
 void SVTableProducer::produce(edm::StreamID,
@@ -64,50 +75,70 @@ void SVTableProducer::produce(edm::StreamID,
         //}
 
         const auto& PV0 = pvsIn->front();
-	        // --- PV table (leading vertex only) ---
-        auto pv_table = std::make_unique<nanoaod::FlatTable>(1, "myPV", true); // true = singleton
+	        // --- Optional PV table (leading vertex only) ---
+        if (savePV_) {
+            auto pv_table = std::make_unique<nanoaod::FlatTable>(1, pvTableName_, true);
 
-        std::vector<float> pv_x{static_cast<float>(PV0.x())};
-        std::vector<float> pv_y{static_cast<float>(PV0.y())};
-        std::vector<float> pv_z{static_cast<float>(PV0.z())};
-        std::vector<float> pv_chi2{static_cast<float>(PV0.chi2())};
-        std::vector<float> pv_ndof{static_cast<float>(PV0.ndof())};
-        std::vector<float> pv_rho{static_cast<float>(PV0.position().Rho())};
-        std::vector<int> pv_ntracks{static_cast<int>(PV0.tracksSize())};
-        std::vector<bool> pv_isFake{PV0.isFake()};
+            std::vector<float> pv_x{static_cast<float>(PV0.x())};
+            std::vector<float> pv_y{static_cast<float>(PV0.y())};
+            std::vector<float> pv_z{static_cast<float>(PV0.z())};
+            std::vector<float> pv_chi2{static_cast<float>(PV0.chi2())};
+            std::vector<float> pv_ndof{static_cast<float>(PV0.ndof())};
+            std::vector<float> pv_rho{static_cast<float>(PV0.position().Rho())};
+            std::vector<int> pv_ntracks{static_cast<int>(PV0.tracksSize())};
+            std::vector<bool> pv_isFake{PV0.isFake()};
 
-        pv_table->addColumn<float>("x", pv_x, "X position of leading PV");
-        pv_table->addColumn<float>("y", pv_y, "Y position of leading PV");
-        pv_table->addColumn<float>("z", pv_z, "Z position of leading PV");
-        pv_table->addColumn<float>("chi2", pv_chi2, "Chi2 of leading PV fit");
-        pv_table->addColumn<float>("ndof", pv_ndof, "Degrees of freedom of leading PV fit");
-        pv_table->addColumn<float>("rho", pv_rho, "Transverse position of leading PV");
-        pv_table->addColumn<int>("nTracks", pv_ntracks, "Number of tracks in leading PV");
-        pv_table->addColumn<bool>("isFake", pv_isFake, "Is fake PV flag");
+            pv_table->addColumn<float>("x", pv_x, "X position of leading PV");
+            pv_table->addColumn<float>("y", pv_y, "Y position of leading PV");
+            pv_table->addColumn<float>("z", pv_z, "Z position of leading PV");
+            pv_table->addColumn<float>("chi2", pv_chi2, "Chi2 of leading PV fit");
+            pv_table->addColumn<float>("ndof", pv_ndof, "Degrees of freedom of leading PV fit");
+            pv_table->addColumn<float>("rho", pv_rho, "Transverse position of leading PV");
+            pv_table->addColumn<int>("nTracks", pv_ntracks, "Number of tracks in leading PV");
+            pv_table->addColumn<bool>("isFake", pv_isFake, "Is fake PV flag");
 
-        iEvent.put(std::move(pv_table), "PVTable");
+            iEvent.put(std::move(pv_table), "PVTable");
+        }
 
         unsigned int nSVtracks = 0;
-        int nTrksCurrentSV = 0;
-        unsigned int nSV_cutdlen = 0;
-        for (auto const& sv : *svs) {
-            Measurement1D dl = vdist.distance(PV0, VertexState(RecoVertex::convertPos(sv.position()), RecoVertex::convertError(sv.error())));
-            if (dl.value() > 0 and dl.significance() > dlenSigMin_) {
-                nTrksCurrentSV = 0;
-                for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
-                    const edm::RefToBase<reco::Track>& trkRef = *it;
-                    if (trkRef.isNull()) continue;
-                    double w = sv.trackWeight(trkRef);   // <-- weight comes from vertex
-                    //if (w < 0.5) continue;               // skip low-weight tracks
-                    nTrksCurrentSV++;
-                }
-                if (nTrksCurrentSV < 2) continue; // skip SVs with less than 2 high-weight tracks
-                nSVtracks += nTrksCurrentSV;
-                nSV_cutdlen+=1;
+        unsigned int nSVSelected = 0;
+
+        for (const auto& sv : *svs) {
+            Measurement1D dl = vdist.distance(
+                PV0,
+                VertexState(
+                    RecoVertex::convertPos(sv.position()),
+                    RecoVertex::convertError(sv.error())
+                )
+            );
+
+            unsigned int nNonNullTracks = 0;
+            for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
+                const edm::RefToBase<reco::Track>& trkRef = *it;
+                if (trkRef.isNull()) continue;
+                ++nNonNullTracks;
             }
+
+            const bool acceptVertex =
+                !applySelection_ ||
+                (
+                    dl.value() > 0.0 &&
+                    dl.significance() > dlenSigMin_ &&
+                    nNonNullTracks >= 2
+                );
+
+            if (!acceptVertex) continue;
+
+            nSVtracks += nNonNullTracks;
+            ++nSVSelected;
         }
-        auto table = std::make_unique<nanoaod::FlatTable>(static_cast<unsigned int>(nSV_cutdlen), "mySV", false);
-        auto trk_table = std::make_unique<nanoaod::FlatTable>(static_cast<unsigned int>(nSVtracks), "mySVtrks", false);
+
+        auto table = std::make_unique<nanoaod::FlatTable>(
+            nSVSelected, tableName_, false
+        );
+        auto trk_table = std::make_unique<nanoaod::FlatTable>(
+            nSVtracks, trackTableName_, false
+        );
 
 
         std::vector<float> x, y, z, chi2, ndof, pt, eta, phi, mass, dlen, dlenSig;
@@ -128,27 +159,43 @@ void SVTableProducer::produce(edm::StreamID,
         // pair_invmass
 
         std::vector<int> nTracks;
+        std::vector<int> svIdx;
         std::vector<int> trk_SVidx;
         std::vector<int> trk_globalIdx;
         std::vector<int> trk_localIdx_inSV;
 
         int nTrksPerSV = 0;
-        //std::cout<<svs->size()<<" SVs to process\n";
-        for (const auto &sv : *svs) {
-            Measurement1D dl = vdist.distance(PV0, VertexState(RecoVertex::convertPos(sv.position()), RecoVertex::convertError(sv.error())));
-            if (dl.value() > 0 and dl.significance() > dlenSigMin_) {
-                nTrksPerSV = 0;
-                // First count tracks with weight >= 0.5
-                for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
-                    const edm::RefToBase<reco::Track>& trkRef = *it;
-                    if (trkRef.isNull()) continue;
-                    double w = sv.trackWeight(trkRef);   // <-- weight comes from vertex
-                    //if (w < 0.5) continue;               // skip low-weight tracks
-                    nTrksPerSV++;
-                }
-                if (nTrksPerSV < 2) continue; // skip SVs with less than 2 high-weight tracks
+        for (size_t inputSVIdx = 0; inputSVIdx < svs->size(); ++inputSVIdx) {
+            const auto& sv = svs->at(inputSVIdx);
 
-                x.push_back(sv.x());
+            Measurement1D dl = vdist.distance(
+                PV0,
+                VertexState(
+                    RecoVertex::convertPos(sv.position()),
+                    RecoVertex::convertError(sv.error())
+                )
+            );
+
+            nTrksPerSV = 0;
+            for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
+                const edm::RefToBase<reco::Track>& trkRef = *it;
+                if (trkRef.isNull()) continue;
+                ++nTrksPerSV;
+            }
+
+            const bool acceptVertex =
+                !applySelection_ ||
+                (
+                    dl.value() > 0.0 &&
+                    dl.significance() > dlenSigMin_ &&
+                    nTrksPerSV >= 2
+                );
+
+            if (!acceptVertex) continue;
+
+            svIdx.push_back(static_cast<int>(inputSVIdx));
+
+            x.push_back(sv.x());
                 y.push_back(sv.y());
                 z.push_back(sv.z());
 
@@ -243,10 +290,10 @@ void SVTableProducer::produce(edm::StreamID,
                 //    << " z=" << sv.z()
                 //    << " nTracks=" << sv.tracksSize()
                 //    << " pt=" << p4s_SV.Pt();
-            }
         }
 
 
+        table->addColumn<int>("svIdx", svIdx, "Index in input reco::Vertex collection");
         table->addColumn<float>("x", x, "X position of SV");
         table->addColumn<float>("y", y, "Y position of SV");
         table->addColumn<float>("z", z, "Z position of SV");
