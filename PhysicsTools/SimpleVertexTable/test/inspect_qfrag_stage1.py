@@ -19,13 +19,17 @@ for event in events:
         elif value == 4: counters["D"] += 1
     for value in event.QHadron_associationQuality:
         counters[{0: "missing", 1: "unique", 2: "ambiguous"}.get(value, "missing")] += 1
-    for value in event.QHadron_charmOrigin:
-        counters[{1: "prompt", 2: "bToD", 3: "unknown"}.get(value, "unknown")] += 1
+    for flavour, origin in zip(event.QHadron_flavour, event.QHadron_charmOrigin):
+        if flavour == 4:
+            counters[{1: "prompt", 2: "bToD", 3: "unknown"}.get(origin, "unknown")] += 1
     for value in event.QGenCharged_membershipType:
         counters[{0: "unassigned", 1: "hfDecay", 2: "fragmentation", 3: "chargedAmbiguous"}.get(value, "unassigned")] += 1
 
 print("QFrag systems: charm=%d bottom=%d light=%d" % (counters["charm"], counters["bottom"], counters["light"]))
 print("QHadron: B=%d D=%d" % (counters["B"], counters["D"]))
 print("QHadron quark association: unique=%d ambiguous=%d missing=%d" % (counters["unique"], counters["ambiguous"], counters["missing"]))
-print("D origin: prompt=%d B-to-D=%d unknown=%d" % (counters["prompt"], counters["bToD"], counters["unknown"]))
+denom = counters["D"]
+print("D origin (D hadrons only): prompt=%d B-to-D=%d unknown=%d" % (counters["prompt"], counters["bToD"], counters["unknown"]))
+if denom:
+    print("D-origin fractions: prompt=%.4f B-to-D=%.4f unknown=%.4f" % (counters["prompt"]/denom, counters["bToD"]/denom, counters["unknown"]/denom))
 print("QGenCharged: HF-decay=%d retained-fragmentation=%d ambiguous=%d unassigned=%d" % (counters["hfDecay"], counters["fragmentation"], counters["chargedAmbiguous"], counters["unassigned"]))
