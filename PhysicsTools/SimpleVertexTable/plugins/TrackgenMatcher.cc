@@ -42,7 +42,7 @@ public:
         maxDeltaR_(cfg.getParameter<double>("maxDeltaR")),
         maxDPtRel_(cfg.getParameter<double>("maxDPtRel")),
         resolveAmbiguities_(cfg.getParameter<bool>("resolveAmbiguities")) {
-    produces<edm::ValueMap<reco::GenParticleRef>>("genMatch");
+    //produces<edm::ValueMap<reco::GenParticleRef>>("genMatch");
     produces<edm::ValueMap<int>>("genPartIdx");
     produces<edm::ValueMap<float>>("genMatchDeltaR");
     produces<edm::ValueMap<float>>("genMatchDPtRel");
@@ -85,18 +85,21 @@ void TrackGenMatcher::produce(edm::StreamID, edm::Event &evt, edm::EventSetup co
     size_t jGen;
   };
   std::vector<Pair> pairs;
-  pairs.reserve(nTrk);
+  pairs.reserve(nTrk); 
 
+
+  // Start here
   for (size_t iTrk = 0; iTrk < nTrk; ++iTrk) {
     const reco::Track &trk = (*tracks)[iTrk];
     for (size_t jGen = 0; jGen < nGen; ++jGen) {
       const reco::GenParticle &gp = (*genParticles)[jGen];
 
-      if (!mcStatus_.empty() &&
-          std::find(mcStatus_.begin(), mcStatus_.end(), gp.status()) == mcStatus_.end())
+      if (!mcStatus_.empty() && std::find(mcStatus_.begin(), mcStatus_.end(), gp.status()) == mcStatus_.end())
+        // if mc status was specified, skip gen particles not in the list
+      // note if std::find  does not find the value, it returns the end iterator, so the condition is true and we skip
         continue;
-      if (!mcPdgId_.empty() &&
-          std::find(mcPdgId_.begin(), mcPdgId_.end(), std::abs(gp.pdgId())) == mcPdgId_.end())
+      if (!mcPdgId_.empty() && std::find(mcPdgId_.begin(), mcPdgId_.end(), std::abs(gp.pdgId())) == mcPdgId_.end())
+      // if pdgId was specified, skip gen particles not in the list
         continue;
       if (checkCharge_ && trk.charge() != gp.charge()) continue;
       if (gp.pt() <= 0) continue;
@@ -112,6 +115,7 @@ void TrackGenMatcher::produce(edm::StreamID, edm::Event &evt, edm::EventSetup co
   }
 
   // best (lowest deltaR) pairs assigned first
+  // sorting with lambda function inline. sorted by best dR
   std::sort(pairs.begin(), pairs.end(), [](const Pair &a, const Pair &b) { return a.dr < b.dr; });
 
   std::vector<bool> trkUsed(nTrk, false);
@@ -130,14 +134,15 @@ void TrackGenMatcher::produce(edm::StreamID, edm::Event &evt, edm::EventSetup co
     if (resolveAmbiguities_) genUsed[p.jGen] = true;
   }
 
-  auto genMatch = std::make_unique<edm::ValueMap<reco::GenParticleRef>>();
-  edm::ValueMap<reco::GenParticleRef>::Filler matchFiller(*genMatch);
-  matchFiller.insert(tracks, bestMatch.begin(), bestMatch.end());
-  matchFiller.fill();
+  //auto genMatch = std::make_unique<edm::ValueMap<reco::GenParticleRef>>();
+  //edm::ValueMap<reco::GenParticleRef>::Filler matchFiller(*genMatch);
+  //matchFiller.insert(tracks, bestMatch.begin(), bestMatch.end());
+  //matchFiller.fill();
 
   std::vector<int> genPartIdx(nTrk, -1);
   for (size_t i = 0; i < nTrk; ++i) {
     if (bestMatch[i].isNonnull()) genPartIdx[i] = bestMatch[i].key();
+    //std::cout << "Track " << i << " matched to gen particle index " << genPartIdx[i] << std::endl;
   }
   auto genPartIdxMap = std::make_unique<edm::ValueMap<int>>();
   edm::ValueMap<int>::Filler idxFiller(*genPartIdxMap);
@@ -154,7 +159,7 @@ void TrackGenMatcher::produce(edm::StreamID, edm::Event &evt, edm::EventSetup co
   dptFiller.insert(tracks, bestDPtRel.begin(), bestDPtRel.end());
   dptFiller.fill();
 
-  evt.put(std::move(genMatch), "genMatch");
+  //evt.put(std::move(genMatch), "genMatch");
   evt.put(std::move(genPartIdxMap), "genPartIdx");
   evt.put(std::move(genMatchDR), "genMatchDeltaR");
   evt.put(std::move(genMatchDPtRel), "genMatchDPtRel");

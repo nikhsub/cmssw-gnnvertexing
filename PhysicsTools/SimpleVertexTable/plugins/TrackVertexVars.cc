@@ -49,7 +49,6 @@
 //
 // NOTE: minHits/minPt do NOT need this producer -- they only depend on the track
 // itself and can be written directly as `Var(...)` expressions in the flat table
-// (see the python snippet below).
 class TrackVertexVars : public edm::stream::EDProducer<> {
 public:
   explicit TrackVertexVars(const edm::ParameterSet &params);
@@ -88,6 +87,9 @@ TrackVertexVars::TrackVertexVars(const edm::ParameterSet &params)
       seedMin3DIPSignificance_(params.getParameter<double>("seedMin3DIPSignificance")),
       seedMax3DIPSignificance_(params.getParameter<double>("seedMax3DIPSignificance")) {
   produces<edm::ValueMap<float>>("dz");
+  produces<edm::ValueMap<float>>("dzSignificance");
+  produces<edm::ValueMap<float>>("ip2dValue");
+  produces<edm::ValueMap<float>>("ip2dSignificance");
   produces<edm::ValueMap<float>>("timeSig");
   produces<edm::ValueMap<int>>("passLIP");
   produces<edm::ValueMap<int>>("passTimeSig");
@@ -129,6 +131,9 @@ void TrackVertexVars::produce(edm::Event &event, const edm::EventSetup &es) {
 
   size_t nTrk = tracks->size();
   std::vector<float> dz(nTrk, SENTINEL);
+  std::vector<float> dzSig(nTrk, SENTINEL);
+  std::vector<float> ip2dValue(nTrk, SENTINEL);
+  std::vector<float> ip2dSignificance(nTrk, SENTINEL);
   std::vector<float> timeSig(nTrk, SENTINEL);
   std::vector<int> passLIP(nTrk, 0);
   std::vector<int> passTimeSig(nTrk, 1);  // IVF does not cut when timing is unavailable -> treat as "pass" by default, same as IVF's `continue` logic (no continue = pass)
@@ -142,10 +147,19 @@ void TrackVertexVars::produce(edm::Event &event, const edm::EventSetup &es) {
     for (size_t i = 0; i < nTrk; ++i) {
       const Track &trk = (*tracks)[i];
 
-      // dz: identical call to what IVF does (there, on tt.track(); here, directly on the reco::Track -- same value)
+      // dz: as computed in IVF 
       float trkDz = trk.dz(pv.position());
+      if (!std::isfinite(trkDz)) {
+        passLIP[i] = 0;
+        continue;   // dz[i], dzSig[i] stay at SENTINEL
+      }
       dz[i] = trkDz;
       passLIP[i] = (std::abs(trkDz) <= maxLIP_) ? 1 : 0;
+      // dz significance
+      float dzErr = std::sqrt(std::pow(trk.dzError(), 2) + pv.covariance(2, 2));
+      if (dzErr > 0.f && std::isfinite(dzErr)) {
+        dzSig[i] = trkDz / dzErr;
+      }
 
       // needs a TransientTrack for timeExt()/dtErrorExt() and for the IP tools below,
       // built the same way IVF builds tts, then setBeamSpot the same way IVF does
@@ -154,6 +168,33 @@ void TrackVertexVars::produce(edm::Event &event, const edm::EventSetup &es) {
       if (!tt.isValid())
         continue;
       tt.setBeamSpot(*beamSpot);
+      
+      // IP2D
+      std::pair<bool, Measurement1D> ip2d = IPTools::absoluteTransverseImpactParameter(tt, pv);
+      if (ip2d.first) {
+          float val = ip2d.second.value();
+          float sig = ip2d.second.significance();
+          if (edm::isFinite(val)) ip2dValue[i] = val;
+          if (edm::isFinite(sig)) ip2dSignificance[i] = sig;
+      }
+      // IP3D
+      std::pair<bool, Measurement1D> ip = IPTools::absoluteImpactParameter3D(tt, pv);
+      if (ip.first) {
+        float ipVal = ip.second.value();
+        float ipSig = ip.second.significance();
+        bool valOk = edm::isFinite(ipVal);
+        bool sigOk = edm::isFinite(ipSig);
+        if (valOk) ip3dValue[i] = ipVal;
+        if (sigOk) ip3dSignificance[i] = ipSig;
+        // only mark as passing/failing the seed window if BOTH quantities are well defined;
+        // otherwise leave passSeed at its default (0), same as the ip.first==false case
+        if (valOk && sigOk) {
+          passSeed[i] = (ipVal >= seedMin3DIPValue_ && ipVal <= seedMax3DIPValue_ &&
+                        ipSig >= seedMin3DIPSignificance_ && ipSig <= seedMax3DIPSignificance_)
+                            ? 1
+                            : 0;
+          }
+      }
 
       // timeSig
       if (edm::isFinite(tt.timeExt()) && pv.covariance(3, 3) > 0.) {
@@ -164,18 +205,6 @@ void TrackVertexVars::produce(edm::Event &event, const edm::EventSetup &es) {
       }
       // else: timeSig stays SENTINEL and passTimeSig stays 1 (no timing -> IVF does not reject on this cut)
 
-      // seed selection: same window cut as TracksClusteringFromDisplacedSeed::clusters()
-      std::pair<bool, Measurement1D> ip = IPTools::absoluteImpactParameter3D(tt, pv);
-      if (ip.first) {
-        float ipVal = ip.second.value();
-        float ipSig = ip.second.significance();
-        ip3dValue[i] = ipVal;
-        ip3dSignificance[i] = ipSig;
-        passSeed[i] = (ipVal >= seedMin3DIPValue_ && ipVal <= seedMax3DIPValue_ &&
-                       ipSig >= seedMin3DIPSignificance_ && ipSig <= seedMax3DIPSignificance_)
-                          ? 1
-                          : 0;
-      }
       // else: ip3dValue/ip3dSignificance stay SENTINEL, passSeed stays 0 (same as IVF: ip.first==false -> not a seed)
     }
   }
@@ -221,6 +250,24 @@ void TrackVertexVars::produce(edm::Event &event, const edm::EventSetup &es) {
   passSeedFiller.insert(tracks, passSeed.begin(), passSeed.end());
   passSeedFiller.fill();
   event.put(std::move(passSeedMap), "passSeed");
+
+  auto dzSigMap = std::make_unique<edm::ValueMap<float>>();
+  edm::ValueMap<float>::Filler dzSigFiller(*dzSigMap);
+  dzSigFiller.insert(tracks, dzSig.begin(), dzSig.end());
+  dzSigFiller.fill();
+  event.put(std::move(dzSigMap), "dzSignificance");
+
+  auto ip2dValueMap = std::make_unique<edm::ValueMap<float>>();
+  edm::ValueMap<float>::Filler ip2dValueFiller(*ip2dValueMap);
+  ip2dValueFiller.insert(tracks, ip2dValue.begin(), ip2dValue.end());
+  ip2dValueFiller.fill();
+  event.put(std::move(ip2dValueMap), "ip2dValue");
+
+  auto ip2dSigMap = std::make_unique<edm::ValueMap<float>>();
+  edm::ValueMap<float>::Filler ip2dSigFiller(*ip2dSigMap);
+  ip2dSigFiller.insert(tracks, ip2dSignificance.begin(), ip2dSignificance.end());
+  ip2dSigFiller.fill();
+  event.put(std::move(ip2dSigMap), "ip2dSignificance");
 }
 
 #include "FWCore/Framework/interface/MakerMacros.h"

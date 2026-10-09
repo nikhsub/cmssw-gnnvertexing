@@ -1,41 +1,5 @@
 import FWCore.ParameterSet.Config as cms
-
-from PhysicsTools.JetMCAlgos.HadronAndPartonSelector_cfi import (
-    selectedHadronsAndPartons,
-)
-from PhysicsTools.JetMCAlgos.AK4PFJetsMCFlavourInfos_cfi import (
-    ak4JetFlavourInfos,
-)
-
-
-selectedHadronsAndPartonsForGVStudy = (
-    selectedHadronsAndPartons.clone(
-        particles = cms.InputTag("prunedGenParticles")
-    )
-)
-
-
-genJetFlavourInfosForGVStudy = ak4JetFlavourInfos.clone(
-    jets = cms.InputTag("slimmedGenJets"),
-
-    bHadrons = cms.InputTag(
-        "selectedHadronsAndPartonsForGVStudy",
-        "bHadrons",
-    ),
-    cHadrons = cms.InputTag(
-        "selectedHadronsAndPartonsForGVStudy",
-        "cHadrons",
-    ),
-    partons = cms.InputTag(
-        "selectedHadronsAndPartonsForGVStudy",
-        "physicsPartons",
-    ),
-    leptons = cms.InputTag(
-        "selectedHadronsAndPartonsForGVStudy",
-        "leptons",
-    ),
-)
-
+# For candidate collection only
 genCandidateVertexProducer = cms.EDProducer("GenVertexCandidateProducer",
     genParticles = cms.InputTag("mergedGenParticles"),
     secondaryVertices = cms.InputTag("myFinalInclusiveSecondaryVertices"),
@@ -45,46 +9,60 @@ genCandidateVertexProducer = cms.EDProducer("GenVertexCandidateProducer",
     dR_max = cms.double(0.03),                                   # dR between tracks and daughters to be considered matched
     relPt_max = cms.double(0.5)                                 # dPt/pt between tracks and daughters to be considered matched
 )
-
+# For central collection only
 genCentralVertexProducer = cms.EDProducer("GenVertexCandidateProducer",
     genParticles = cms.InputTag("mergedGenParticles"),
     secondaryVertices = cms.InputTag("slimmedSecondaryVertices"),
     pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
-    nRequiredCommonTracks = cms.int32(1),        # number of tracks required to match the genDaughters
+    nRequiredCommonTracks = cms.int32(2),        # number of tracks required to match the genDaughters
     dlenSigMin = cms.double(3.0),
     dR_max = cms.double(0.03),                                   # dR between tracks and daughters to be considered matched
     relPt_max = cms.double(0.2)                                 # dPt/pt between tracks and daughters to be considered matched
 )
 
-genVertexProducer = cms.EDProducer("GenVertexProducer",
+# For track collection only
+genVertexTable = cms.EDProducer("GVProducer",
     genParticles = cms.InputTag("mergedGenParticles"),
-    prunedGenParticles = cms.InputTag("prunedGenParticles"),
-    jetFlavourInfos = cms.InputTag("genJetFlavourInfosForGVStudy"),
-    secondaryVertices = cms.InputTag("myFinalInclusiveSecondaryVertices"),
+    minHadronPt = cms.double(1.0),  
+    minDaughterPt = cms.double(0.4),  
+    maxHadronEta = cms.double(2.5),   
+    maxDaughterEta = cms.double(2.5)   
+)
+
+gvMatchTable = cms.EDProducer("GVMatchProducer",
     pvSrc = cms.InputTag("offlineSlimmedPrimaryVertices"),
-    nRequiredCommonTracks = cms.int32(1),        # number of tracks required to match the genDaughters
-    hadPt_min = cms.double(0.0), #Minimum hadron pt for saving gen info
-    dlenSigMin = cms.double(0.),
-    dR_max = cms.double(0.03),                                   # dR between tracks and daughters to be considered matched
+    secondaryVertices = cms.InputTag("myFinalInclusiveSecondaryVertices"),
+    tracks = cms.InputTag("unpackedTracksAndVertices"),  # or your favorite general track collection
+
+    # outputs from genVertexTable that GVMatchProducer consumes
+    hadronGVx      = cms.InputTag("genVertexTable", "hadronGVx"),
+    hadronGVy      = cms.InputTag("genVertexTable", "hadronGVy"),
+    hadronGVz      = cms.InputTag("genVertexTable", "hadronGVz"),
+    hadronEta      = cms.InputTag("genVertexTable", "hadronEta"),
+    hadronPhi      = cms.InputTag("genVertexTable", "hadronPhi"),
+    daughterPt     = cms.InputTag("genVertexTable", "daughterPt"),
+    daughterEta    = cms.InputTag("genVertexTable", "daughterEta"),
+    daughterPhi    = cms.InputTag("genVertexTable", "daughterPhi"),
+    daughterCharge = cms.InputTag("genVertexTable", "daughterCharge"),
+    daughterGVidx  = cms.InputTag("genVertexTable", "daughterGVidx"),
+    nGV            = cms.InputTag("genVertexTable", "nGV"),
+
+    # matching parameters, unchanged from the original module
+    nRequiredCommonTracks = cms.int32(2),
+    dlenSigMin = cms.double(0.3),
+    dR_max = cms.double(0.03),
     relPt_max = cms.double(0.2),
     doubleMatching = cms.bool(False),
-    doubleMatching_nRequiredCommonTracks = cms.int32(3),        # number of tracks required to match the genDaughters
+    doubleMatching_nRequiredCommonTracks = cms.int32(3),
     doubleMatching_maxSignificance = cms.double(999.),
     doubleMatching_dR_max = cms.double(0.05),
     doubleMatching_relPt_max = cms.double(0.4),
-    tracks                 = cms.InputTag("unpackedTracksAndVertices"),  # or your favorite general track collection
-    trkMaxDeltaR           = cms.double(0.03),
-    trkMaxDPtRel           = cms.double(0.2),
-    trkCheckCharge         = cms.bool(False),
-    trkResolveAmbiguities  = cms.bool(True),
+    trkMaxDeltaR = cms.double(0.03),
+    trkMaxDPtRel = cms.double(0.2),
+    trkCheckCharge = cms.bool(False),
+    trkResolveAmbiguities = cms.bool(True),
 )
 
-
-svTruthTableProducer = cms.EDProducer(
-    "SVTruthTableProducer",
-    svTable = cms.InputTag("svTable", "SVTable"),
-    svGVMatchTable = cms.InputTag("gvProducer", "SVGVMatchTable")
-)
 
 
 def custom_GV_producer(process, collection="candidate"):
@@ -94,32 +72,15 @@ def custom_GV_producer(process, collection="candidate"):
         process.genVertexProducer_sequence = cms.Sequence(process.genCandidateVertexProducer)
     elif collection=="track":
         print("Track collection is running")
-        process.selectedHadronsAndPartonsForGVStudy = (
-            selectedHadronsAndPartonsForGVStudy
-        )
-        process.genJetFlavourInfosForGVStudy = (
-            genJetFlavourInfosForGVStudy
-        )
-        process.gvProducer = genVertexProducer
-        process.svTruthTable = svTruthTableProducer
-        print(genVertexProducer)
-        process.genVertexProducer_sequence = cms.Sequence(
-            process.selectedHadronsAndPartonsForGVStudy
-            * process.genJetFlavourInfosForGVStudy
-            * process.gvProducer
-            * process.svTruthTable
-        )
+        process.gvProducer = genVertexTable
+        #process.gvMatchProducer = gvMatchTable
+        process.genVertexProducer_sequence = cms.Sequence(process.gvProducer)
+        #process.genVertexProducer_sequence = cms.Sequence(
+        #    process.gvProducer *
+        #    process.gvMatchProducer
+        #)
     elif collection=="central":
         print("Central collection is running")
         process.gvCentralProducer = genCentralVertexProducer
         process.genVertexProducer_sequence = cms.Sequence(process.gvCentralProducer)
     return process
-
-
-#def add_sv_truth_output_commands(process):
-#    keep_cmd = "keep *_svTruthTable_SVTruthTable_*"
-#    if hasattr(process, "NANOAODEventContent"):
-#        process.NANOAODEventContent.outputCommands.append(keep_cmd)
-#    if hasattr(process, "NANOEDMAODEventContent"):
-#        process.NANOEDMAODEventContent.outputCommands.append(keep_cmd)
-#    return process
