@@ -22,10 +22,13 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace {
   constexpr float kInvalid = -999.f;
+  constexpr double kV2MinMomentumGeV = 1.e-6;
+  constexpr double kV2MinTransverseFraction = 1.e-6;
   enum AssociationType { kNoAssociation = 0, kRetainedAncestry = 1 };
   enum AssociationQuality { kMissing = 0, kUnique = 1, kAmbiguous = 2 };
   enum MembershipType { kUnassigned = 0, kHeavyHadronDecay = 1, kRetainedFragmentation = 2, kAmbiguousMembership = 3 };
@@ -46,6 +49,28 @@ namespace {
   enum LineageOrigin { kLineageOriginNA = 0, kLineagePromptD = 1, kLineageBtoD = 2, kLineageOriginUnknown = 3 };
   enum HeavyContent { kContentUnsupported = 0, kContentCharm = 4, kContentAntiCharm = -4,
                       kContentBottom = 5, kContentAntiBottom = -5, kContentMultiHeavy = 6 };
+  // Version-2 output enums. Existing V1/Stage-1 columns keep their meanings.
+  enum LineageV2Quality { kV2Missing = 0, kV2Unique = 1, kV2Ambiguous = 2, kV2Unknown = 3 };
+  enum LineageV2Reason { kV2UniquePath = 1, kV2MultipleLineages = 2, kV2NoCompatible = 3,
+                         kV2IncompleteAncestry = 4, kV2UnsupportedContent = 5, kV2AmbiguousPath = 6,
+                         kV2NoQFragRow = 7, kV2MultiHeavy = 8, kV2UnresolvedBSource = 9 };
+  enum LineageV2Origin { kV2OriginNA = 0, kV2Prompt = 1, kV2BtoD = 2, kV2OriginUnknown = 3 };
+  enum LineageV2Source { kV2SourceNA = 0, kV2DAncestry = 1, kV2BHadron = 2, kV2BUnresolved = 3 };
+  enum LineageV2SourceReason { kV2SourceReasonNA = 0, kV2DAncestryOriginUnconfirmed = 1,
+                               kV2ExplicitPrompt = 2, kV2UniqueBAncestor = 3,
+                               kV2BAncestorUnmapped = 4, kV2MultipleBAncestors = 5,
+                               kV2SelectedB = 6 };
+  enum LineageV2PathReason { kV2PathOK = 0, kV2PathMultipleLineages = 1,
+                             kV2PathMultipleRoots = 2, kV2PathMultipleTerminals = 3,
+                             kV2PathBranchingNode = 4, kV2PathMultiMotherNode = 5,
+                             kV2PathDisconnected = 6, kV2PathUnavailable = 7 };
+  enum LineageV2KinematicReason { kV2KinematicsValid = 0, kV2NoPreHadronCopy = 1,
+                                  kV2NonFiniteMomentum = 2, kV2ZeroMomentum = 3,
+                                  kV2BeamLikeMomentum = 4, kV2InvalidAngles = 5,
+                                  kV2NoHadronAdjacentCopy = 6 };
+  enum LineageV2PreHadSelectionReason { kV2PreHadNotEvaluated = 0, kV2DirectHadronLink = 1,
+                                        kV2LastCopyAlongPath = 2, kV2NoHadronLink = 3,
+                                        kV2PreHadAmbiguousPath = 4 };
 
   bool isQuark(int id) { return std::abs(id) >= 1 && std::abs(id) <= 5; }
   int flavour(int id) { return std::abs(id); }
@@ -85,6 +110,70 @@ namespace {
     bool branching = false;
   };
 
+  struct CopyPath {
+    std::vector<int> ordered;
+    int roots = 0;
+    int terminals = 0;
+    int branchingNodes = 0;
+    int multiMotherNodes = 0;
+    int reason = kV2PathUnavailable;
+    bool unique = false;
+  };
+
+  CopyPath analyzeCopyPath(const QuarkLineage& lineage, const std::unordered_set<int>& ancestryQuarks,
+                           const reco::GenParticleCollection& particles,
+                           const std::unordered_map<const reco::Candidate*, int>& lookup) {
+    CopyPath result;
+    std::unordered_set<int> nodes;
+    for (const int copy : lineage.copies) if (ancestryQuarks.count(copy)) nodes.insert(copy);
+    if (nodes.empty()) return result;
+    std::unordered_map<int, std::vector<int>> daughters;
+    std::unordered_map<int, int> nMothers;
+    for (const int node : nodes) {
+      const auto& particle = particles[node];
+      std::unordered_set<int> uniqueMothers;
+      for (size_t im = 0; im < particle.numberOfMothers(); ++im) {
+        const auto found = lookup.find(particle.mother(im));
+        if (particle.mother(im) && found != lookup.end() && nodes.count(found->second) &&
+            particles[found->second].pdgId() == particle.pdgId() && uniqueMothers.insert(found->second).second) {
+          ++nMothers[node];
+          daughters[found->second].push_back(node);
+        }
+      }
+    }
+    for (const int node : nodes) {
+      if (nMothers[node] == 0) ++result.roots;
+      if (daughters[node].empty()) ++result.terminals;
+      if (daughters[node].size() > 1) ++result.branchingNodes;
+      if (nMothers[node] > 1) ++result.multiMotherNodes;
+    }
+    if (result.roots != 1) { result.reason = kV2PathMultipleRoots; return result; }
+    if (result.terminals != 1) { result.reason = kV2PathMultipleTerminals; return result; }
+    if (result.branchingNodes) { result.reason = kV2PathBranchingNode; return result; }
+    if (result.multiMotherNodes) { result.reason = kV2PathMultiMotherNode; return result; }
+    int current = -1;
+    for (const int node : nodes) if (nMothers[node] == 0) current = node;
+    std::unordered_set<int> seen;
+    while (current >= 0 && seen.insert(current).second) {
+      result.ordered.push_back(current);
+      if (daughters[current].empty()) break;
+      current = daughters[current].front();
+    }
+    if (result.ordered.size() != nodes.size() || result.ordered.empty() || daughters[result.ordered.back()].size() != 0) {
+      result.ordered.clear();
+      result.reason = kV2PathDisconnected;
+      return result;
+    }
+    result.unique = true;
+    result.reason = kV2PathOK;
+    return result;
+  }
+
+  bool isHadronRecord(int pdgId) {
+    const int id = std::abs(pdgId);
+    return id >= 100 && id < 1000000000;
+  }
+
   struct Ancestors {
     std::vector<int> indices;
     unsigned int maxDepth = 0;
@@ -103,6 +192,10 @@ public:
         debugAncestry_(cfg.getParameter<bool>("debugAncestry")),
         debugOnlyAmbiguous_(cfg.getParameter<bool>("debugOnlyAmbiguous")),
         debugOnlyD_(cfg.getParameter<bool>("debugOnlyD")),
+        debugV2OldUniqueToV1Unknown_(cfg.getParameter<bool>("debugV2OldUniqueToV1Unknown")),
+        debugV2LineageReason6_(cfg.getParameter<bool>("debugV2LineageReason6")),
+        debugV2LineageReason10_(cfg.getParameter<bool>("debugV2LineageReason10")),
+        debugV2InvalidKinematics_(cfg.getParameter<bool>("debugV2InvalidKinematics")),
         debugMaxEvents_(cfg.getParameter<unsigned int>("debugMaxEvents")),
         debugMaxHadronsPerEvent_(cfg.getParameter<unsigned int>("debugMaxHadronsPerEvent")),
         debugMaxDepth_(cfg.getParameter<unsigned int>("debugMaxDepth")) {
@@ -130,6 +223,10 @@ private:
   bool debugAncestry_;
   bool debugOnlyAmbiguous_;
   bool debugOnlyD_;
+  bool debugV2OldUniqueToV1Unknown_;
+  bool debugV2LineageReason6_;
+  bool debugV2LineageReason10_;
+  bool debugV2InvalidKinematics_;
   unsigned int debugMaxEvents_;
   unsigned int debugMaxHadronsPerEvent_;
   unsigned int debugMaxDepth_;
@@ -376,6 +473,14 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   std::vector<float> hLineagePreHadPt(hPruned.size(), kInvalid), hLineagePreHadEta(hPruned.size(), kInvalid), hLineagePreHadPhi(hPruned.size(), kInvalid);
   std::vector<float> hLineageZ(hPruned.size(), kInvalid), hLineageDR(hPruned.size(), kInvalid);
   std::vector<std::vector<int>> hCompatibleLineages(hPruned.size());
+  std::vector<int> v2QFrag(hPruned.size(), -1), v2Pdg(hPruned.size(), 0), v2Quality(hPruned.size(), kV2Missing), v2Reason(hPruned.size(), kV2NoCompatible);
+  std::vector<int> v2Origin(hPruned.size(), kV2OriginNA), v2OriginReason(hPruned.size(), kOriginNotD), v2Source(hPruned.size(), kV2SourceNA), v2SourceReason(hPruned.size(), kV2SourceReasonNA), v2SourceCertain(hPruned.size(), 0), v2SourceHadron(hPruned.size(), -1);
+  std::vector<int> v2NCompatible(hPruned.size(), 0), v2NDistinct(hPruned.size(), 0), v2NRoots(hPruned.size(), -1), v2NTerminals(hPruned.size(), -1), v2NBranching(hPruned.size(), -1), v2NMultiMother(hPruned.size(), -1), v2PathUnique(hPruned.size(), -1), v2PathReason(hPruned.size(), kV2PathUnavailable);
+  std::vector<int> v2AncestryIncomplete(hPruned.size(), -1), v2AncestryTruncated(hPruned.size(), -1);
+  std::vector<int> v2Hard(hPruned.size(), -1), v2Last(hPruned.size(), -1), v2PreHad(hPruned.size(), -1), v2PreHadSelectionReason(hPruned.size(), kV2PreHadNotEvaluated), v2KinValid(hPruned.size(), 0), v2KinReason(hPruned.size(), kV2NoPreHadronCopy);
+  std::vector<std::vector<int>> v2SelectedPath(hPruned.size());
+  std::vector<float> v2HardPt(hPruned.size(), kInvalid), v2HardEta(hPruned.size(), kInvalid), v2HardPhi(hPruned.size(), kInvalid);
+  std::vector<float> v2PreHadPt(hPruned.size(), kInvalid), v2PreHadEta(hPruned.size(), kInvalid), v2PreHadPhi(hPruned.size(), kInvalid), v2Z(hPruned.size(), kInvalid), v2DR(hPruned.size(), kInvalid);
   ++debugEventsSeen_;
   unsigned int debuggedHadrons = 0;
   for (size_t ih = 0; ih < hPruned.size(); ++ih) {
@@ -556,9 +661,199 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
         }
       }
     }
+
+    // V2 intentionally separates origin classification, retained heavy-quark
+    // ancestry, source-hadron choice, and momentum-reference validity. It writes
+    // only versioned columns and leaves all Stage-1/V1 values above untouched.
+    int v2SourcePruned = -1;
+    int v2Content = kContentUnsupported;
+    bool v2CanSearch = true;
+    if (isD) {
+      v2Origin[ih] = hadCharmOrigin[ih] == kPromptCharm ? kV2Prompt
+                       : (hadCharmOrigin[ih] == kCharmFromB ? kV2BtoD : kV2OriginUnknown);
+      v2OriginReason[ih] = hOriginReason[ih];
+      if (hadFromB[ih]) {
+        if (bAncestors.size() == 1) {
+          const int bRow = *bAncestors.begin();
+          v2Source[ih] = kV2BHadron;
+          v2SourceReason[ih] = kV2UniqueBAncestor;
+          v2SourceCertain[ih] = 1;
+          v2SourcePruned = hPruned[bRow];
+        } else {
+          v2Source[ih] = kV2BUnresolved;
+          v2SourceReason[ih] = bAncestors.empty() ? kV2BAncestorUnmapped : kV2MultipleBAncestors;
+          v2SourceCertain[ih] = 0;
+          v2CanSearch = false;  // positive B evidence must not fall back to charm
+          v2Quality[ih] = kV2Unknown;
+          v2Reason[ih] = kV2UnresolvedBSource;
+        }
+      } else {
+        v2Source[ih] = kV2DAncestry;
+        v2SourcePruned = hPruned[ih];
+        if (v2Origin[ih] == kV2Prompt) {
+          v2SourceReason[ih] = kV2ExplicitPrompt;
+          v2SourceCertain[ih] = 1;
+        } else {
+          v2SourceReason[ih] = kV2DAncestryOriginUnconfirmed;
+          v2SourceCertain[ih] = 0;
+        }
+      }
+    } else if (isBHadron(hadronId)) {
+      v2Source[ih] = kV2BHadron;
+      v2SourceReason[ih] = kV2SelectedB;
+      v2SourceCertain[ih] = 1;
+      v2SourcePruned = hPruned[ih];
+    }
+    v2SourceHadron[ih] = v2SourcePruned;
+
+    if (v2CanSearch && v2SourcePruned >= 0) {
+      v2Content = heavyContent((*pruned)[v2SourcePruned].pdgId());
+      if (v2Content == kContentUnsupported || v2Content == kContentMultiHeavy) {
+        v2Quality[ih] = kV2Unknown;
+        v2Reason[ih] = v2Content == kContentMultiHeavy ? kV2MultiHeavy : kV2UnsupportedContent;
+      } else {
+        const Ancestors v2Ancestry = ancestors(v2SourcePruned, *pruned, prunedIndex);
+        v2AncestryIncomplete[ih] = v2Ancestry.incomplete;
+        v2AncestryTruncated[ih] = v2Ancestry.truncated;
+        std::unordered_set<int> ancestryQuarks, candidateLineages, compatibleLineages;
+        for (const int ancestor : v2Ancestry.indices) {
+          if (!isQuark((*pruned)[ancestor].pdgId())) continue;
+          ancestryQuarks.insert(ancestor);
+          const auto lineageIt = prunedToLineage.find(ancestor);
+          if (lineageIt == prunedToLineage.end()) continue;
+          candidateLineages.insert(lineageIt->second);
+          if ((*pruned)[ancestor].pdgId() == v2Content) compatibleLineages.insert(lineageIt->second);
+        }
+        v2NDistinct[ih] = candidateLineages.size();
+        v2NCompatible[ih] = compatibleLineages.size();
+        std::vector<std::pair<int, CopyPath>> compatiblePaths;
+        if (!compatibleLineages.empty()) {
+          v2NRoots[ih] = 0; v2NTerminals[ih] = 0; v2NBranching[ih] = 0; v2NMultiMother[ih] = 0;
+        }
+        for (const int lineageId : compatibleLineages) {
+          auto path = analyzeCopyPath(quarkLineages[lineageId], ancestryQuarks, *pruned, prunedIndex);
+          v2NRoots[ih] += path.roots;
+          v2NTerminals[ih] += path.terminals;
+          v2NBranching[ih] += path.branchingNodes;
+          v2NMultiMother[ih] += path.multiMotherNodes;
+          compatiblePaths.emplace_back(lineageId, std::move(path));
+        }
+        if (compatibleLineages.size() > 1) {
+          v2Quality[ih] = kV2Ambiguous;
+          v2Reason[ih] = kV2MultipleLineages;
+          v2PathUnique[ih] = 0;
+          v2PathReason[ih] = kV2PathMultipleLineages;
+        } else if (compatibleLineages.empty()) {
+          const bool incomplete = v2Ancestry.incomplete || v2Ancestry.truncated;
+          v2Quality[ih] = incomplete ? kV2Unknown : kV2Missing;
+          v2Reason[ih] = incomplete ? kV2IncompleteAncestry : kV2NoCompatible;
+        } else {
+          const int lineageId = compatiblePaths.front().first;
+          const CopyPath& path = compatiblePaths.front().second;
+          v2PathUnique[ih] = path.unique ? 1 : 0;
+          v2PathReason[ih] = path.reason;
+          v2SelectedPath[ih] = path.ordered;
+          if (!path.unique) {
+            v2Quality[ih] = kV2Ambiguous;
+            v2Reason[ih] = kV2AmbiguousPath;
+            v2PreHadSelectionReason[ih] = kV2PreHadAmbiguousPath;
+          } else if (v2Ancestry.incomplete || v2Ancestry.truncated) {
+            v2Quality[ih] = kV2Unknown;
+            v2Reason[ih] = kV2IncompleteAncestry;
+          } else {
+            v2Quality[ih] = kV2Unique;
+            v2Reason[ih] = kV2UniquePath;
+          }
+          const auto& lineage = quarkLineages[lineageId];
+          v2Pdg[ih] = lineage.pdgId;
+          for (const int copy : path.ordered) {
+            if ((*pruned)[copy].statusFlags().isHardProcess()) { v2Hard[ih] = copy; break; }
+          }
+          if (!path.ordered.empty()) {
+            v2Last[ih] = path.ordered.back();
+            std::unordered_set<int> sourceAncestryNodes(v2Ancestry.indices.begin(), v2Ancestry.indices.end());
+            sourceAncestryNodes.insert(v2SourcePruned);
+            std::vector<int> hadronAdjacent;
+            for (const int copy : path.ordered) {
+              bool hasHadronDaughter = false;
+              for (const int descendant : sourceAncestryNodes) {
+                if (!isHadronRecord((*pruned)[descendant].pdgId())) continue;
+                const auto& hadron = (*pruned)[descendant];
+                for (size_t im = 0; im < hadron.numberOfMothers(); ++im) {
+                  const auto mother = prunedIndex.find(hadron.mother(im));
+                  if (hadron.mother(im) && mother != prunedIndex.end() && mother->second == copy) hasHadronDaughter = true;
+                }
+              }
+              if (hasHadronDaughter) hadronAdjacent.push_back(copy);
+            }
+            if (hadronAdjacent.size() == 1) {
+              v2PreHad[ih] = hadronAdjacent.front();
+              v2PreHadSelectionReason[ih] = kV2DirectHadronLink;
+            } else if (hadronAdjacent.size() > 1) {
+              // The unique directed copy path orders these copies. Select its
+              // last hadron-adjacent member, not an arbitrary collection row.
+              v2PreHad[ih] = hadronAdjacent.back();
+              v2PreHadSelectionReason[ih] = kV2LastCopyAlongPath;
+            } else {
+              v2KinReason[ih] = kV2NoHadronAdjacentCopy;
+              v2PreHadSelectionReason[ih] = kV2NoHadronLink;
+            }
+          }
+          if (v2Quality[ih] == kV2Unique && !path.ordered.empty()) {
+            const auto row = prunedToQFrag.find(path.ordered.back());
+            if (row != prunedToQFrag.end()) v2QFrag[ih] = row->second;
+            else { v2Reason[ih] = kV2NoQFragRow; }
+          }
+          if (v2PreHad[ih] >= 0) {
+            const auto& q = (*pruned)[v2PreHad[ih]];
+            const auto& source = (*pruned)[v2SourcePruned];
+            const double px = q.px(), py = q.py(), pz = q.pz();
+            const double p2 = px*px + py*py + pz*pz;
+            const double p = std::sqrt(p2), pt = q.pt();
+            const double sourceEta = source.eta(), sourcePhi = source.phi();
+            if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz) || !std::isfinite(p2) || !std::isfinite(pt) ||
+                !std::isfinite(source.px()) || !std::isfinite(source.py()) || !std::isfinite(source.pz())) {
+              v2KinReason[ih] = kV2NonFiniteMomentum;
+            } else if (p <= kV2MinMomentumGeV) {
+              v2KinReason[ih] = kV2ZeroMomentum;
+            } else if (pt / p <= kV2MinTransverseFraction) {
+              v2KinReason[ih] = kV2BeamLikeMomentum;
+            } else if (!std::isfinite(q.eta()) || !std::isfinite(q.phi()) || !std::isfinite(sourceEta) || !std::isfinite(sourcePhi)) {
+              v2KinReason[ih] = kV2InvalidAngles;
+            } else {
+              const double z = (source.px()*px + source.py()*py + source.pz()*pz) / p2;
+              const double dr = reco::deltaR(sourceEta, sourcePhi, q.eta(), q.phi());
+              if (!std::isfinite(z) || !std::isfinite(dr)) {
+                v2KinReason[ih] = kV2NonFiniteMomentum;
+              } else {
+                v2KinValid[ih] = 1;
+                v2KinReason[ih] = kV2KinematicsValid;
+                v2PreHadPt[ih] = q.pt(); v2PreHadEta[ih] = q.eta(); v2PreHadPhi[ih] = q.phi();
+                v2Z[ih] = z;
+                v2DR[ih] = dr;
+              }
+            }
+          }
+          if (v2Hard[ih] >= 0) {
+            const auto& hard = (*pruned)[v2Hard[ih]];
+            if (std::isfinite(hard.pt()) && std::isfinite(hard.eta()) && std::isfinite(hard.phi())) {
+              v2HardPt[ih] = hard.pt(); v2HardEta[ih] = hard.eta(); v2HardPhi[ih] = hard.phi();
+            }
+          }
+        }
+      }
+    }
+    const bool v2FocusRequested = debugV2OldUniqueToV1Unknown_ || debugV2LineageReason6_ || debugV2LineageReason10_ || debugV2InvalidKinematics_;
+    const bool v2FocusMatch = (debugV2OldUniqueToV1Unknown_ && hadAssocQ[ih] == kUnique && hLineageQuality[ih] == kLineageUnknown) ||
+                              (debugV2LineageReason6_ && hLineageReason[ih] == kLineageCopyBranching) ||
+                              (debugV2LineageReason10_ && hLineageReason[ih] == kLineageOriginUnresolved) ||
+                              (debugV2InvalidKinematics_ && v2PathUnique[ih] == 1 && !v2KinValid[ih]);
+    const bool standardDebugMatch = (!debugOnlyAmbiguous_ || hadAssocQ[ih] == kAmbiguous ||
+                                      hLineageQuality[ih] == kLineageAmbiguous || hLineageQuality[ih] == kLineageUnknown ||
+                                      v2Quality[ih] == kV2Ambiguous || v2Quality[ih] == kV2Unknown) &&
+        (!debugOnlyD_ || isDHadron((*pruned)[hPruned[ih]].pdgId()));
     if (debugAncestry_ && debugEventsSeen_ <= debugMaxEvents_ && debuggedHadrons < debugMaxHadronsPerEvent_ &&
-        (!debugOnlyAmbiguous_ || hadAssocQ[ih] == kAmbiguous || hLineageQuality[ih] == kLineageAmbiguous || hLineageQuality[ih] == kLineageUnknown) &&
-        (!debugOnlyD_ || isDHadron((*pruned)[hPruned[ih]].pdgId()))) {
+        (v2FocusRequested ? v2FocusMatch : standardDebugMatch)) {
       logAncestry(event, ih, hPruned[ih], *pruned, prunedIndex, hadCandidateCopies[ih], ancestry, hadQuark[ih],
                   hadAssocQ[ih], hAssocReason[ih], hadCharmOrigin[ih], hOriginReason[ih], debugMaxDepth_);
       auto lineageLog = edm::LogInfo("QFragAncestry");
@@ -577,6 +872,19 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
         lineageLog << "\n  compatible pdgId=" << lineage.pdgId << " copies=";
         for (const int copy : lineage.copies) lineageLog << copy << ',';
       }
+      lineageLog << "\nV2 Event=" << event.id() << " quality=" << v2Quality[ih] << " reason=" << v2Reason[ih]
+                 << " qFragIdx=" << v2QFrag[ih] << " sourceCategory=" << v2Source[ih]
+                 << " sourceReason=" << v2SourceReason[ih] << " sourceHadronPrunedIdx=" << v2SourceHadron[ih]
+                 << " origin=" << v2Origin[ih] << " originReason=" << v2OriginReason[ih]
+                 << " compatibleLineages=" << v2NCompatible[ih] << " roots=" << v2NRoots[ih]
+                 << " terminals=" << v2NTerminals[ih] << " branchingNodes=" << v2NBranching[ih]
+                 << " multiMotherNodes=" << v2NMultiMother[ih] << " pathUnique=" << v2PathUnique[ih]
+                 << " pathReason=" << v2PathReason[ih] << " hardPrunedIdx=" << v2Hard[ih]
+                 << " lastPrunedIdx=" << v2Last[ih] << " preHadPrunedIdx=" << v2PreHad[ih]
+                 << " preHadSelectionReason=" << v2PreHadSelectionReason[ih] << " kinematicsValid=" << v2KinValid[ih]
+                 << " kinematicsReason=" << v2KinReason[ih] << " z=" << v2Z[ih] << " deltaR=" << v2DR[ih];
+      lineageLog << "\n  V2 selected pruned quark path=";
+      for (const int copy : v2SelectedPath[ih]) lineageLog << copy << ',';
       ++debuggedHadrons;
     }
   }
@@ -695,6 +1003,36 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   hTable->addColumn<int>("lineageParentBHadronIdx",hLineageParentB,"unique retained selected B QHadron row for D, or -1");
   hTable->addColumn<int>("lineageOriginCategory",hLineageOrigin,"0 n/a, 1 explicitly prompt D, 2 retained B-to-D, 3 unknown");
   hTable->addColumn<int>("lineageOriginReason",hLineageOriginReason,"0 n/a, 1 unique retained B, 2 multiple B ancestors, 3 explicit prompt flag, 4 incomplete/unmapped B evidence, 5 no retained B or prompt evidence");
+  hTable->addColumn<int>("lineageV2QuarkIdx",v2QFrag,"QFrag row for V2 lineage, or -1 when unmapped/unresolved");
+  hTable->addColumn<int>("lineageV2QuarkPdgId",v2Pdg,"signed V2 heavy-quark PDG ID, or 0");
+  hTable->addColumn<int>("lineageV2AssociationQuality",v2Quality,"0 missing, 1 unique ancestry, 2 ambiguous, 3 unknown/incomplete");
+  hTable->addColumn<int>("lineageV2AssociationReason",v2Reason,"1 unique path, 2 multiple compatible lineages, 3 no compatible lineage, 4 incomplete ancestry, 5 unsupported content, 6 ambiguous path, 7 no QFrag row, 8 multi-heavy hadron, 9 unresolved B source");
+  hTable->addColumn<int>("lineageV2OriginCategory",v2Origin,"0 n/a, 1 prompt by existing explicit classification, 2 retained B-to-D, 3 unknown");
+  hTable->addColumn<int>("lineageV2OriginReason",v2OriginReason,"existing Stage-1 originReason enum, copied without reinterpretation");
+  hTable->addColumn<int>("lineageV2SourceCategory",v2Source,"0 n/a, 1 D ancestry, 2 B hadron, 3 unresolved positive B evidence");
+  hTable->addColumn<int>("lineageV2SourceReason",v2SourceReason,"0 n/a, 1 unconfirmed D ancestry, 2 explicit prompt, 3 unique B ancestor, 4 B ancestor unmapped, 5 multiple B ancestors, 6 selected B row");
+  hTable->addColumn<int>("lineageV2FragmentationSourceCertain",v2SourceCertain,"1 only for confirmed prompt or selected B source; 0 otherwise");
+  hTable->addColumn<int>("lineageV2SourceHadronPrunedIdx",v2SourceHadron,"source hadron prunedGenParticles index, or -1");
+  hTable->addColumn<int>("lineageV2AncestryIncomplete",v2AncestryIncomplete,"source-ancestry gap flag; -1 if source unresolved");
+  hTable->addColumn<int>("lineageV2AncestryTruncated",v2AncestryTruncated,"source-ancestry depth guard flag; -1 if source unresolved");
+  hTable->addColumn<int>("lineageV2NCompatibleHFLineages",v2NCompatible,"number of distinct signed-PDG compatible copy components");
+  hTable->addColumn<int>("lineageV2NDistinctQuarkLineages",v2NDistinct,"all explicit-link quark components in source ancestry");
+  hTable->addColumn<int>("lineageV2NRoots",v2NRoots,"roots across compatible candidates; -1 if none");
+  hTable->addColumn<int>("lineageV2NTerminals",v2NTerminals,"terminals across compatible candidates; -1 if none");
+  hTable->addColumn<int>("lineageV2NBranchingNodes",v2NBranching,"same-PDG branch nodes in candidate ancestry; -1 if none");
+  hTable->addColumn<int>("lineageV2NMultiMotherNodes",v2NMultiMother,"same-PDG multi-mother nodes in candidate ancestry; -1 if none");
+  hTable->addColumn<int>("lineageV2PathUnique",v2PathUnique,"-1 unavailable, 0 ambiguous, 1 unique retained copy path");
+  hTable->addColumn<int>("lineageV2BranchingReason",v2PathReason,"0 unique path, 1 multiple lineages, 2 roots, 3 terminals, 4 branch, 5 multi-mother, 6 disconnected, 7 unavailable");
+  hTable->addColumn<int>("lineageV2HardPrunedIdx",v2Hard,"hard-process copy on selected path, or -1");
+  hTable->addColumn<int>("lineageV2LastPrunedIdx",v2Last,"terminal retained copy on selected path, or -1");
+  hTable->addColumn<int>("lineageV2PreHadPrunedIdx",v2PreHad,"unique quark copy directly linked to a hadron ancestor on selected path, or -1");
+  hTable->addColumn<int>("lineageV2PreHadSelectionReason",v2PreHadSelectionReason,"0 not evaluated, 1 unique hadron link, 2 furthest downstream of multiple linked copies, 3 no hadron link, 4 ambiguous copy path");
+  hTable->addColumn<float>("lineageV2HardPt",v2HardPt,"hard copy pt or -999"); hTable->addColumn<float>("lineageV2HardEta",v2HardEta,"hard copy eta or -999"); hTable->addColumn<float>("lineageV2HardPhi",v2HardPhi,"hard copy phi or -999");
+  hTable->addColumn<float>("lineageV2PreHadPt",v2PreHadPt,"validated pre-hadronization proxy pt or -999"); hTable->addColumn<float>("lineageV2PreHadEta",v2PreHadEta,"validated pre-hadronization proxy eta or -999"); hTable->addColumn<float>("lineageV2PreHadPhi",v2PreHadPhi,"validated pre-hadronization proxy phi or -999");
+  hTable->addColumn<int>("lineageV2PreHadKinematicsValid",v2KinValid,"1 valid momentum and angles, 0 invalid/unavailable");
+  hTable->addColumn<int>("lineageV2PreHadKinematicsReason",v2KinReason,"0 valid; 1 no copy; 2 nonfinite; 3 |p|<=1e-6 GeV; 4 pT/|p|<=1e-6; 5 invalid angles; 6 no hadron adjacency");
+  hTable->addColumn<float>("lineageV2ZHadron",v2Z,"source-hadron 3-vector projection, unclipped, or -999");
+  hTable->addColumn<float>("lineageV2DeltaRHadron",v2DR,"deltaR between selected source hadron and validated copy, or -999");
 
   auto cTable = std::make_unique<nanoaod::FlatTable>(cPacked.size(), "QGenCharged", false, false);
   cTable->addColumn<int>("packedGenIdx",cPacked,"packedGenParticles index"); cTable->addColumn<int>("pdgId",cPdg,"signed PDG identifier"); cTable->addColumn<int>("charge",cCharge,"electric charge"); cTable->addColumn<float>("pt",cPt,"pt"); cTable->addColumn<float>("eta",cEta,"eta"); cTable->addColumn<float>("phi",cPhi,"phi"); cTable->addColumn<float>("mass",cMass,"mass"); cTable->addColumn<int>("quarkIdx",cQuark,"QFrag row or -1"); cTable->addColumn<int>("hadronIdx",cHadron,"QHadron row or -1"); cTable->addColumn<int>("lastPrunedIdx",cLastPruned,"lastPrunedRef key or -1"); cTable->addColumn<int>("isHFDecay",cHFDecay,"unique selected heavy-hadron ancestor"); cTable->addColumn<int>("isDirectHFDecay",cDirectHFDecay,"generator direct-hadron-decay flag"); cTable->addColumn<int>("isFragmentation",cFragmentation,"retained quark ancestry outside selected HF decay"); cTable->addColumn<int>("isFromB",cFromB,"retained B ancestor"); cTable->addColumn<int>("isFromPromptD",cFromPromptD,"retained confirmed-prompt D ancestor"); cTable->addColumn<int>("isFromBtoD",cFromBtoD,"both B and D retained ancestors"); cTable->addColumn<int>("membershipType",cMembership,"0 unassigned, 1 HF decay, 2 retained fragmentation, 3 ambiguous"); cTable->addColumn<int>("isAmbiguous",cAmbiguous,"multiple retained systems or HF ancestors"); cTable->addColumn<float>("deltaRQuark",cDR,"quark deltaR or -999"); cTable->addColumn<float>("zTrackQuark",cZ,"quark projection or -999"); cTable->addColumn<float>("jTQuark",cJT,"transverse momentum to quark or -999");

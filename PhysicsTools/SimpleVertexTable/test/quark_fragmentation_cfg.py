@@ -12,6 +12,14 @@ options.register("debugOnlyAmbiguous", True, VarParsing.multiplicity.singleton,
                  VarParsing.varType.bool, "Restrict ancestry logs to ambiguous quark associations")
 options.register("debugOnlyD", True, VarParsing.multiplicity.singleton,
                  VarParsing.varType.bool, "Restrict ancestry logs to D hadrons")
+options.register("debugV2OldUniqueToV1Unknown", False, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.bool, "Focus logs on old unique to V1 unknown")
+options.register("debugV2LineageReason6", False, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.bool, "Focus logs on V1 branching-copy reason 6")
+options.register("debugV2LineageReason10", False, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.bool, "Focus logs on V1 unresolved-origin reason 10")
+options.register("debugV2InvalidKinematics", False, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.bool, "Focus logs on V2 invalid momentum references")
 options.register("debugMaxEvents", 10, VarParsing.multiplicity.singleton,
                  VarParsing.varType.int, "Maximum processed events eligible for ancestry logs")
 options.register("debugMaxHadronsPerEvent", 10, VarParsing.multiplicity.singleton,
@@ -32,6 +40,10 @@ process = custom_quark_fragmentation_training(process)
 process.quarkFragmentationProducer.debugAncestry = cms.bool(options.debugAncestry)
 process.quarkFragmentationProducer.debugOnlyAmbiguous = cms.bool(options.debugOnlyAmbiguous)
 process.quarkFragmentationProducer.debugOnlyD = cms.bool(options.debugOnlyD)
+process.quarkFragmentationProducer.debugV2OldUniqueToV1Unknown = cms.bool(options.debugV2OldUniqueToV1Unknown)
+process.quarkFragmentationProducer.debugV2LineageReason6 = cms.bool(options.debugV2LineageReason6)
+process.quarkFragmentationProducer.debugV2LineageReason10 = cms.bool(options.debugV2LineageReason10)
+process.quarkFragmentationProducer.debugV2InvalidKinematics = cms.bool(options.debugV2InvalidKinematics)
 process.quarkFragmentationProducer.debugMaxEvents = cms.uint32(options.debugMaxEvents)
 process.quarkFragmentationProducer.debugMaxHadronsPerEvent = cms.uint32(options.debugMaxHadronsPerEvent)
 process.quarkFragmentationProducer.debugMaxDepth = cms.uint32(options.debugMaxDepth)
