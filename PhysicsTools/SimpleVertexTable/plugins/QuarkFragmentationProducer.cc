@@ -894,6 +894,9 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   for (const int q : hadQuark) if (q >= 0) ++qNHadrons[q];
 
   std::vector<int> cPacked, cPdg, cCharge, cQuark, cHadron, cLastPruned, cLastPdg, cLastStatus, cLastSelf, cHFDecay, cDirectHFDecay, cFragmentation, cFromB, cFromPromptD, cFromBtoD, cMembership, cAmbiguous, cNCandidateSystems, cNCandidateHadrons, cHasBAncestor, cHasDAncestor, cMultipleBranches, cAncestryTruncated, cMembershipReason;
+  std::vector<int> cV2Hadron, cV2NearestHadronPruned, cV2HadronQuality, cV2HadronReason;
+  std::vector<int> cV2Quark, cV2Quality, cV2Reason, cV2Membership, cV2SourceCertain;
+  std::vector<int> cV2FromUnknownD, cV2NearestHeavyCount, cV2CandidateLineages, cV2CandidateSystems;
   std::vector<float> cPt, cEta, cPhi, cMass, cDR, cZ, cJT;
   for (size_t ip = 0; ip < packed->size(); ++ip) {
     const auto& p = (*packed)[ip];
@@ -942,6 +945,109 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
     // PackedGenParticle::motherRef() treats a stored status-1 pruned reference
     // as the packed particle's own pruned representation and steps past it.
     const bool lastSelf = last >= 0 && (*pruned)[last].status() == 1;
+
+    // V2 charged assignment: distances are measured on the retained mother
+    // graph from lastPrunedRef (which may be the packed particle's own
+    // status-1 pruned record). The nearest final B/D ancestor owns the decay
+    // association. Equal-distance distinct hadrons stay ambiguous.
+    std::unordered_map<int, unsigned int> ancestorDistance;
+    std::queue<std::pair<int, unsigned int>> distanceQueue;
+    if (last >= 0) { ancestorDistance[last] = 0; distanceQueue.push({last, 0}); }
+    while (!distanceQueue.empty()) {
+      const int node = distanceQueue.front().first;
+      const unsigned int depth = distanceQueue.front().second;
+      distanceQueue.pop();
+      const auto& nodeParticle = (*pruned)[node];
+      for (size_t im = 0; im < nodeParticle.numberOfMothers(); ++im) {
+        const auto found = prunedIndex.find(nodeParticle.mother(im));
+        if (nodeParticle.mother(im) && found != prunedIndex.end() && !ancestorDistance.count(found->second)) {
+          ancestorDistance[found->second] = depth + 1;
+          distanceQueue.push({found->second, depth + 1});
+        }
+      }
+    }
+    unsigned int nearestHeavyDistance = std::numeric_limits<unsigned int>::max();
+    std::unordered_set<int> nearestHeavyPruned;
+    for (const auto& entry : ancestorDistance) {
+      const int index = entry.first;
+      if (!isHeavyHadron((*pruned)[index].pdgId())) continue;
+      if (entry.second < nearestHeavyDistance) {
+        nearestHeavyDistance = entry.second;
+        nearestHeavyPruned.clear();
+      }
+      if (entry.second == nearestHeavyDistance) {
+        nearestHeavyPruned.insert(index);
+      }
+    }
+    int v2Hadron = -1, v2NearestPruned = -1, v2HadronQuality = kMissing, v2HadronReason = 0;
+    if (nearestHeavyPruned.size() == 1) {
+      v2NearestPruned = *nearestHeavyPruned.begin();
+      const auto found = prunedToHadron.find(v2NearestPruned);
+      if (found != prunedToHadron.end()) { v2Hadron = found->second; v2HadronQuality = kUnique; v2HadronReason = 1; }
+      else { v2HadronQuality = kV2Unknown; v2HadronReason = 3; }
+    } else if (nearestHeavyPruned.size() > 1) {
+      v2HadronQuality = kAmbiguous; v2HadronReason = 2;
+    } else if (ancestry.incomplete || ancestry.truncated || last < 0) {
+      v2HadronQuality = kV2Unknown; v2HadronReason = 4;
+    }
+    bool v2HasUnknownD = false;
+    for (const int ancestor : ancestry.indices) {
+      if (!isDHadron((*pruned)[ancestor].pdgId())) continue;
+      const auto d = prunedToHadron.find(ancestor);
+      if (d == prunedToHadron.end()) continue;
+      v2HasUnknownD |= v2Origin[d->second] == kV2OriginUnknown;
+    }
+    int v2Quark = -1, v2AssociationQuality = kMissing, v2AssociationReason = 3;
+    int v2Membership = kUnassigned, v2SourceIsCertain = 0;
+    std::unordered_set<int> candidateLineages, candidateV2Systems;
+    std::unordered_set<int> ancestryQuarks(ancestry.indices.begin(), ancestry.indices.end());
+    if (last >= 0 && isQuark((*pruned)[last].pdgId())) ancestryQuarks.insert(last);
+    for (const int ancestor : ancestryQuarks) {
+      const auto lineage = prunedToLineage.find(ancestor);
+      if (lineage == prunedToLineage.end()) continue;
+      candidateLineages.insert(lineage->second);
+      const auto row = prunedToQFrag.find(ancestor);
+      if (row != prunedToQFrag.end()) candidateV2Systems.insert(row->second);
+    }
+    if (v2Hadron >= 0 && nearestHeavyPruned.size() == 1) {
+      v2Membership = kHeavyHadronDecay;
+      v2AssociationQuality = v2Quality[v2Hadron];
+      v2Quark = v2QFrag[v2Hadron];
+      v2AssociationReason = v2Reason[v2Hadron];
+      v2SourceIsCertain = v2SourceCertain[v2Hadron];
+    } else if (nearestHeavyPruned.size() > 1) {
+      v2Membership = kAmbiguousMembership;
+      v2AssociationQuality = kAmbiguous;
+      v2AssociationReason = 6;
+    } else if (nearestHeavyPruned.size() == 1) {
+      // A retained heavy-hadron ancestor exists but is not represented by a
+      // selected QHadron row. Keep decay membership while withholding indices.
+      v2Membership = kHeavyHadronDecay;
+      v2AssociationQuality = kV2Unknown;
+      v2AssociationReason = 5;
+    } else if (nearestHeavyPruned.empty()) {
+      if (candidateLineages.size() > 1 || candidateV2Systems.size() > 1) {
+        v2AssociationQuality = kAmbiguous;
+        v2Membership = kAmbiguousMembership;
+        v2AssociationReason = 2;
+      } else if (candidateV2Systems.size() == 1 && candidateLineages.size() == 1 && !ancestry.incomplete && !ancestry.truncated) {
+        v2Quark = *candidateV2Systems.begin();
+        v2AssociationQuality = kUnique;
+        v2Membership = kRetainedFragmentation;
+        v2AssociationReason = 1;
+        // A generic charged hadron's retained ancestry may include shared
+        // string partners. It is never sufficient by itself to certify the
+        // physical fragmentation source.
+      } else if (candidateLineages.size() == 1 || ancestry.incomplete || ancestry.truncated || last < 0) {
+        v2AssociationQuality = kV2Unknown;
+        v2AssociationReason = candidateLineages.size() == 1 ? 5 : 4;
+      }
+    }
+    if (v2HadronQuality == kAmbiguous && v2Membership != kHeavyHadronDecay) {
+      v2Membership = kAmbiguousMembership;
+      v2AssociationQuality = kAmbiguous;
+      v2Quark = -1;
+    }
     cPacked.push_back(ip); cPdg.push_back(p.pdgId()); cCharge.push_back(p.charge()); cPt.push_back(p.pt()); cEta.push_back(p.eta()); cPhi.push_back(p.phi()); cMass.push_back(p.mass());
     cQuark.push_back(qidx); cHadron.push_back(hidx); cLastPruned.push_back(last); cHFDecay.push_back(hfDecay); cDirectHFDecay.push_back(directHF); cFragmentation.push_back(membership == kRetainedFragmentation);
     cLastPdg.push_back(last >= 0 ? (*pruned)[last].pdgId() : -999); cLastStatus.push_back(last >= 0 ? (*pruned)[last].status() : -1); cLastSelf.push_back(lastSelf);
@@ -951,6 +1057,12 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
                                   : (membership == kRetainedFragmentation ? kReasonRetainedFragmentation
                                      : (membership == kAmbiguousMembership ? kReasonAmbiguousMembership : kReasonUnassigned)));
     cDR.push_back(dr); cZ.push_back(z); cJT.push_back(jt);
+    cV2Hadron.push_back(v2Hadron); cV2NearestHadronPruned.push_back(v2NearestPruned);
+    cV2HadronQuality.push_back(v2HadronQuality); cV2HadronReason.push_back(v2HadronReason);
+    cV2Quark.push_back(v2Quark); cV2Quality.push_back(v2AssociationQuality); cV2Reason.push_back(v2AssociationReason);
+    cV2Membership.push_back(v2Membership); cV2SourceCertain.push_back(v2SourceIsCertain);
+    cV2FromUnknownD.push_back(v2HasUnknownD); cV2NearestHeavyCount.push_back(nearestHeavyPruned.size());
+    cV2CandidateLineages.push_back(candidateLineages.size()); cV2CandidateSystems.push_back(candidateV2Systems.size());
   }
 
   auto qTable = std::make_unique<nanoaod::FlatTable>(qRep.size(), "QFrag", false, false);
@@ -1037,6 +1149,19 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   auto cTable = std::make_unique<nanoaod::FlatTable>(cPacked.size(), "QGenCharged", false, false);
   cTable->addColumn<int>("packedGenIdx",cPacked,"packedGenParticles index"); cTable->addColumn<int>("pdgId",cPdg,"signed PDG identifier"); cTable->addColumn<int>("charge",cCharge,"electric charge"); cTable->addColumn<float>("pt",cPt,"pt"); cTable->addColumn<float>("eta",cEta,"eta"); cTable->addColumn<float>("phi",cPhi,"phi"); cTable->addColumn<float>("mass",cMass,"mass"); cTable->addColumn<int>("quarkIdx",cQuark,"QFrag row or -1"); cTable->addColumn<int>("hadronIdx",cHadron,"QHadron row or -1"); cTable->addColumn<int>("lastPrunedIdx",cLastPruned,"lastPrunedRef key or -1"); cTable->addColumn<int>("isHFDecay",cHFDecay,"unique selected heavy-hadron ancestor"); cTable->addColumn<int>("isDirectHFDecay",cDirectHFDecay,"generator direct-hadron-decay flag"); cTable->addColumn<int>("isFragmentation",cFragmentation,"retained quark ancestry outside selected HF decay"); cTable->addColumn<int>("isFromB",cFromB,"retained B ancestor"); cTable->addColumn<int>("isFromPromptD",cFromPromptD,"retained confirmed-prompt D ancestor"); cTable->addColumn<int>("isFromBtoD",cFromBtoD,"both B and D retained ancestors"); cTable->addColumn<int>("membershipType",cMembership,"0 unassigned, 1 HF decay, 2 retained fragmentation, 3 ambiguous"); cTable->addColumn<int>("isAmbiguous",cAmbiguous,"multiple retained systems or HF ancestors"); cTable->addColumn<float>("deltaRQuark",cDR,"quark deltaR or -999"); cTable->addColumn<float>("zTrackQuark",cZ,"quark projection or -999"); cTable->addColumn<float>("jTQuark",cJT,"transverse momentum to quark or -999");
   cTable->addColumn<int>("nCandidateQuarkSystems",cNCandidateSystems,"retained QFrag components encountered"); cTable->addColumn<int>("nCandidateHeavyHadrons",cNCandidateHadrons,"selected B/D hadron ancestors"); cTable->addColumn<int>("hasBHadronAncestor",cHasBAncestor,"retained B ancestor"); cTable->addColumn<int>("hasCHadronAncestor",cHasDAncestor,"retained D ancestor"); cTable->addColumn<int>("hasMultipleMotherBranches",cMultipleBranches,"an ancestor record has multiple mothers"); cTable->addColumn<int>("ancestryTruncated",cAncestryTruncated,"depth guard reached"); cTable->addColumn<int>("membershipReason",cMembershipReason,"1 unique selected HF hadron, 2 unique quark system outside HF decay, 3 multiple candidates, 4 no candidate"); cTable->addColumn<int>("lastPrunedPdgId",cLastPdg,"last pruned PDG id or -999"); cTable->addColumn<int>("lastPrunedStatus",cLastStatus,"last pruned status or -1"); cTable->addColumn<int>("lastPrunedIsSelf",cLastSelf,"1 when retained reference is status-1, the case PackedGenParticle::motherRef identifies as its self-copy");
+  cTable->addColumn<int>("v2HadronIdx",cV2Hadron,"nearest selected heavy-hadron QHadron row; -1 if unresolved");
+  cTable->addColumn<int>("v2NearestHeavyPrunedIdx",cV2NearestHadronPruned,"nearest retained physical B/D pruned index, including unselected records; -1 if absent or tied");
+  cTable->addColumn<int>("v2HadronAssociationQuality",cV2HadronQuality,"0 missing, 1 unique, 2 ambiguous, 3 unknown/incomplete");
+  cTable->addColumn<int>("v2HadronAssociationReason",cV2HadronReason,"1 unique selected nearest hadron, 2 tie, 3 nearest hadron not selected, 4 absent with incomplete ancestry");
+  cTable->addColumn<int>("v2QuarkIdx",cV2Quark,"V2-associated QFrag row; -1 if unresolved or unmapped");
+  cTable->addColumn<int>("v2AssociationQuality",cV2Quality,"0 missing, 1 unique retained ancestry, 2 ambiguous, 3 unknown/incomplete");
+  cTable->addColumn<int>("v2AssociationReason",cV2Reason,"1 unique, 2 multiple lineages, 3 no quark ancestor, 4 incomplete ancestry, 5 lineage lacks QFrag row, 6 tied nearest heavy hadrons, otherwise copied QHadron V2 reason");
+  cTable->addColumn<int>("v2MembershipType",cV2Membership,"0 unassigned, 1 heavy-hadron decay, 2 additional retained fragmentation candidate, 3 ambiguous membership");
+  cTable->addColumn<int>("v2FragmentationSourceCertain",cV2SourceCertain,"1 only inherited from a certain QHadron V2 source; generic charged fragmentation candidates are 0");
+  cTable->addColumn<int>("v2IsFromUnknownD",cV2FromUnknownD,"retained ancestry includes selected D with unknown origin");
+  cTable->addColumn<int>("v2NNearestHeavyHadrons",cV2NearestHeavyCount,"number of equally near retained physical B/D hadrons");
+  cTable->addColumn<int>("v2NCandidateQuarkLineages",cV2CandidateLineages,"distinct connected signed-PDG quark-copy groups in ancestry");
+  cTable->addColumn<int>("v2NCandidateQFragSystems",cV2CandidateSystems,"distinct selected QFrag rows in ancestry");
   event.put(std::move(qTable), "QFragTable"); event.put(std::move(hTable), "QHadronTable"); event.put(std::move(cTable), "QGenChargedTable");
 }
 
