@@ -58,7 +58,7 @@ def main():
 
     branches = [
         "run", "luminosityBlock", "event",
-        "QFrag_flavour",
+        "QFrag_flavour", "QFrag_pdgId",
         "QHadron_flavour", "QHadron_lineageV2QuarkIdx", "QHadron_lineageV2AssociationQuality",
         "QHadron_lineageV2OriginCategory", "QHadron_lineageV2FragmentationSourceCertain",
         "QGenCharged_packedGenIdx", "QGenCharged_pt", "QGenCharged_eta",
@@ -98,6 +98,7 @@ def main():
                     event_key = (get("run"), get("luminosityBlock"), get("event"))
                     seen_current_events.add(event_key)
                     qflav = get("QFrag_flavour")
+                    qpdg = get("QFrag_pdgId")
                     hflav = get("QHadron_flavour")
                     hq = get("QHadron_lineageV2QuarkIdx")
                     hquality = get("QHadron_lineageV2AssociationQuality")
@@ -170,7 +171,8 @@ def main():
                         if quality not in (0, 1, 2, 3):
                             raise AssertionError("unknown QHadron V2 quality %r in event %s, row %d" % (quality, get("event"), hrow))
                     prompt_qsystems = set()
-                    accepted_extra_by_q = Counter()
+                    accepted_unique_extra_by_q = Counter()
+                    accepted_certain_extra_by_q = Counter()
                     accepted_daughters_by_hadron = Counter()
                     prompt_d_rows = set()
                     for hrow, (flav, origin, certain, quark) in enumerate(zip(hflav, horigin, hcertain, hq)):
@@ -245,35 +247,48 @@ def main():
                             summary["additional_old_ambiguous_to_new_unique"] += extra_old == "ambiguous" and extra_new == "unique"
                             summary["additional_old_ambiguous_to_new_ambiguous_or_unresolved"] += extra_old == "ambiguous" and extra_new != "unique"
                         if v2mem[row] == 2 and v2quality[row] == 1 and v2q[row] >= 0:
-                            flavour = int(qflav[v2q[row]])
+                            flavour = int(qpdg[v2q[row]])
                             names = {4: "c", -4: "anti-c", 5: "b", -5: "anti-b", 1: "d", -1: "anti-d", 2: "u", -2: "anti-u", 3: "s", -3: "anti-s"}
                             summary["extra_unique_flavour_" + names.get(flavour, str(flavour))] += 1
+                            summary["extra_unique_quark_association"] += 1
                             summary["extra_unique_source_certain"] += bool(v2certain[row])
                             summary["extra_unique_source_uncertain"] += not bool(v2certain[row])
-                            if pt[row] >= 0.4 and abs(eta[row]) <= 2.5 and v2certain[row] and v2q[row] in prompt_qsystems:
-                                accepted_extra_by_q[v2q[row]] += 1
+                            if pt[row] >= 0.4 and abs(eta[row]) <= 2.5 and v2q[row] in prompt_qsystems:
+                                accepted_unique_extra_by_q[v2q[row]] += 1
+                                summary["prompt_charm_additional_accepted_unique"] += 1
+                                if v2certain[row]:
+                                    accepted_certain_extra_by_q[v2q[row]] += 1
+                                    summary["prompt_charm_additional_accepted_source_certain"] += 1
+                                else:
+                                    summary["prompt_charm_additional_accepted_unique_source_uncertain"] += 1
                         if v2mem[row] == 1 and v2q[row] >= 0 and v2certain[row] and pt[row] >= 0.4 and abs(eta[row]) <= 2.5:
                             hrow = v2h[row]
                             if hrow in prompt_d_rows:
                                 accepted_daughters_by_hadron[hrow] += 1
-                    system_bins = Counter()
+                    unique_system_bins = Counter()
+                    certain_system_bins = Counter()
                     d_bins = Counter()
                     for quark in prompt_qsystems:
-                        system_bins[min(accepted_extra_by_q[quark], 3)] += 1
+                        unique_system_bins[min(accepted_unique_extra_by_q[quark], 3)] += 1
+                        certain_system_bins[min(accepted_certain_extra_by_q[quark], 3)] += 1
                     for hrow in prompt_d_rows:
                         d_bins[min(accepted_daughters_by_hadron[hrow], 3)] += 1
                     summary["confirmed_prompt_charm_systems"] += len(prompt_qsystems)
                     for count in range(4):
-                        summary["prompt_systems_with_%s_additional_accepted" % ("3plus" if count == 3 else count)] += system_bins[count]
+                        suffix = "3plus" if count == 3 else str(count)
+                        summary["prompt_systems_with_%s_unique_additional_accepted" % suffix] += unique_system_bins[count]
+                        summary["prompt_systems_with_%s_source_certain_additional_accepted" % suffix] += certain_system_bins[count]
                         summary["prompt_D_with_%s_accepted_decay_descendants" % ("3plus" if count == 3 else count)] += d_bins[count]
                     for quark in sorted(prompt_qsystems):
                         drows = [hrow for hrow in prompt_d_rows if hq[hrow] == quark]
                         acceptance_rows.append({"file": str(path), "run": event_key[0], "luminosityBlock": event_key[1],
                                                 "event": event_key[2], "qfragIdx": quark,
-                                                "additionalAcceptedCharged": accepted_extra_by_q[quark],
+                                                "additionalAcceptedChargedUnique": accepted_unique_extra_by_q[quark],
+                                                "additionalAcceptedChargedSourceCertain": accepted_certain_extra_by_q[quark],
+                                                "additionalAcceptedChargedUniqueSourceUncertain": accepted_unique_extra_by_q[quark] - accepted_certain_extra_by_q[quark],
                                                 "promptDCount": len(drows),
                                                 "promptDObjectsWithExactlyTwoAcceptedChargedDaughters": sum(accepted_daughters_by_hadron[hrow] == 2 for hrow in drows),
-                                                "sourceCertaintyNote": "extra-particle certainty is conservative; only certain extra assignments enter the count"})
+                                                "sourceCertaintyNote": "unique count includes uncertain candidates; source-certain is the nested subset"})
         if reference is not None and seen_current_events != set(reference):
             missing_current = set(reference) - seen_current_events
             if missing_current:
@@ -290,10 +305,11 @@ def main():
         write_csv(prefix.with_name(prefix.name + "_problematic.csv"), examples,
                   ["file", "run", "luminosityBlock", "event", "packedGenIdx", "issue", "old_quarkIdx", "new_quarkIdx", "new_hadronIdx", "hadronQuality", "membership", "associationQuality", "associationReason"])
         write_csv(prefix.with_name(prefix.name + "_prompt_charm_acceptance.csv"), acceptance_rows,
-                  ["file", "run", "luminosityBlock", "event", "qfragIdx", "additionalAcceptedCharged", "promptDCount",
+                  ["file", "run", "luminosityBlock", "event", "qfragIdx", "additionalAcceptedChargedUnique",
+                   "additionalAcceptedChargedSourceCertain", "additionalAcceptedChargedUniqueSourceUncertain", "promptDCount",
                    "promptDObjectsWithExactlyTwoAcceptedChargedDaughters", "sourceCertaintyNote"])
-        # The conservative source-certainty policy leaves generic extra particles
-        # uncertified; acceptance estimates are therefore reported as a limitation.
+        # Unique ancestry acceptance and the stricter source-certain subset are
+        # reported independently to expose the effect of the certainty policy.
         if summary["invariant_failures"]:
             raise SystemExit("%s has %d invariant failures; see %s" % (path, summary["invariant_failures"], prefix.with_name(prefix.name + "_problematic.csv")))
         print("%s: %d events, %d QGenCharged rows; CSVs written with prefix %s" %
@@ -302,7 +318,10 @@ def main():
             print("  Pass --reference with the same events from the pre-update producer to verify selections and unchanged V2 hadron truth.")
         else:
             print("  Compared QFrag, QHadron, QGenCharged selection/order and QHadron V2 truth by event identity.")
-        print("  Generic extra-fragmentation source certainty is conservatively 0.")
+        print("  Prompt-charm additional accepted: unique=%d, source-certain=%d, unique/source-uncertain=%d" %
+              (summary["prompt_charm_additional_accepted_unique"],
+               summary["prompt_charm_additional_accepted_source_certain"],
+               summary["prompt_charm_additional_accepted_unique_source_uncertain"]))
 
 
 if __name__ == "__main__":
