@@ -6,7 +6,8 @@ packedGenIdx; no flattened cross-event row alignment is assumed.
 """
 import argparse
 import csv
-from collections import Counter
+import json
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import awkward as ak
@@ -44,16 +45,92 @@ def load_reference(filename, tree_name):
     return indexed
 
 
+def read_fwlite_chains(filename, requests, max_depth=12):
+    """Resolve stored pruned indices to mother links using matching MiniAOD (CMSSW FWLite)."""
+    try:
+        import ROOT
+        from DataFormats.FWLite import Events, Handle
+    except ImportError as exc:
+        raise SystemExit("--miniAOD requires the CMSSW Python environment with ROOT and DataFormats.FWLite: %s" % exc)
+
+    wanted, results = defaultdict(list), {}
+    for request in requests:
+        if request["lastPrunedIdx"] >= 0:
+            wanted[(request["run"], request["luminosityBlock"], request["event"])].append(request)
+        else:
+            results[request["requestId"]] = "NO_STORED_PRUNED_INDEX"
+    pruned_handle = Handle("std::vector<reco::GenParticle>")
+    events = Events(filename)
+    for event in events:
+        aux = event.eventAuxiliary()
+        eid = aux.id()
+        key = (int(eid.run()), int(aux.luminosityBlock()), int(eid.event()))
+        if key not in wanted:
+            continue
+        event.getByLabel("prunedGenParticles", pruned_handle)
+        if not pruned_handle.isValid():
+            continue
+        particles = pruned_handle.product()
+        try:
+            address_to_index = {int(ROOT.addressof(particles[i])): i for i in range(len(particles))}
+        except Exception as exc:
+            raise SystemExit("Cannot index prunedGenParticles proxies through PyROOT in %s: %s" % (filename, exc))
+        for request in wanted[key]:
+            start = request["lastPrunedIdx"]
+            if start >= len(particles):
+                results[request["requestId"]] = "START_INDEX_OUT_OF_RANGE"
+                continue
+            queue, seen, rows = [(start, 0)], set(), []
+            while queue:
+                idx, depth = queue.pop(0)
+                if idx in seen:
+                    continue
+                seen.add(idx)
+                particle = particles[idx]
+                mothers = []
+                for im in range(int(particle.numberOfMothers())):
+                    mother = particle.mother(im)
+                    try:
+                        mother_index = address_to_index.get(int(ROOT.addressof(mother)))
+                    except Exception:
+                        mother_index = None
+                    if mother_index is None:
+                        mothers.append({"index": None, "pdgId": int(mother.pdgId()) if mother else None})
+                    else:
+                        mothers.append({"index": mother_index, "pdgId": int(mother.pdgId())})
+                        if depth < max_depth:
+                            queue.append((mother_index, depth + 1))
+                rows.append({"index": idx, "pdgId": int(particle.pdgId()), "status": int(particle.status()),
+                             "depth": depth, "isSelectedQFragRepresentative": idx == request.get("qfragPrunedIdx", -1),
+                             "mothers": mothers})
+            results[request["requestId"]] = json.dumps(rows, separators=(",", ":"))
+    for request in requests:
+        results.setdefault(request["requestId"], "EVENT_OR_PRODUCT_NOT_FOUND")
+    return results
+
+
+def particle_kind(pdg_id):
+    apdg = abs(int(pdg_id))
+    return {11: "electron", 13: "muon", 211: "pion", 321: "kaon", 2212: "proton"}.get(apdg, "other")
+
+
+def bin_count(value):
+    return "3plus" if value >= 3 else str(value)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inputs", nargs="+", help="NanoAOD ROOT input file(s)")
     parser.add_argument("--reference", nargs="+", help="Optional pre-update ROOT file(s), one per input, for invariant regression checks")
+    parser.add_argument("--miniAOD", nargs="+", help="Optional matching MiniAOD file(s), one per NanoAOD input, for retained generator mother chains")
     parser.add_argument("--output-dir", required=True, type=Path, help="Directory for per-file CSV reports")
     parser.add_argument("--max-examples", type=int, default=100, help="Maximum detailed issue rows per input")
     parser.add_argument("--tree", default="Events", help="ROOT tree path (default: Events)")
     args = parser.parse_args()
     if args.reference and len(args.reference) != len(args.inputs):
         parser.error("--reference must provide exactly one file for each input")
+    if args.miniAOD and len(args.miniAOD) != len(args.inputs):
+        parser.error("--miniAOD must provide exactly one matching file for each input")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     branches = [
@@ -61,23 +138,27 @@ def main():
         "QFrag_flavour", "QFrag_pdgId",
         "QHadron_flavour", "QHadron_lineageV2QuarkIdx", "QHadron_lineageV2AssociationQuality",
         "QHadron_lineageV2OriginCategory", "QHadron_lineageV2FragmentationSourceCertain",
-        "QGenCharged_packedGenIdx", "QGenCharged_pt", "QGenCharged_eta",
+        "QGenCharged_packedGenIdx", "QGenCharged_pdgId", "QGenCharged_pt", "QGenCharged_eta",
         "QGenCharged_quarkIdx", "QGenCharged_hadronIdx", "QGenCharged_isHFDecay",
         "QGenCharged_isFromB", "QGenCharged_isFromPromptD", "QGenCharged_isFromBtoD",
-        "QGenCharged_membershipType", "QGenCharged_isAmbiguous",
+        "QGenCharged_membershipType", "QGenCharged_isAmbiguous", "QGenCharged_nCandidateQuarkSystems",
+        "QGenCharged_lastPrunedIdx",
         "QGenCharged_v2HadronIdx", "QGenCharged_v2NearestHeavyPrunedIdx",
         "QGenCharged_v2HadronAssociationQuality", "QGenCharged_v2HadronAssociationReason",
         "QGenCharged_v2QuarkIdx", "QGenCharged_v2AssociationQuality",
         "QGenCharged_v2AssociationReason", "QGenCharged_v2MembershipType",
         "QGenCharged_v2FragmentationSourceCertain", "QGenCharged_v2IsFromUnknownD",
         "QGenCharged_v2NNearestHeavyHadrons", "QGenCharged_v2NCandidateQuarkLineages",
-        "QGenCharged_v2NCandidateQFragSystems",
+        "QGenCharged_v2NCandidateQFragSystems", "QFrag_prunedGenIdx",
     ]
     required = set(branches)
     for file_number, filename in enumerate(args.inputs):
         path = Path(filename)
         stem = path.stem
         summary, transitions, examples, acceptance_rows = Counter(), Counter(), [], []
+        prompt_cross = Counter()
+        prompt_system_rows, high_mult_rows, transition_breakdown, case_requests = [], [], Counter(), []
+        request_counter = 0
         seen_current_events = set()
         reference = load_reference(args.reference[file_number], args.tree) if args.reference else None
         with uproot.open(path) as root_file:
@@ -99,6 +180,7 @@ def main():
                     seen_current_events.add(event_key)
                     qflav = get("QFrag_flavour")
                     qpdg = get("QFrag_pdgId")
+                    qpruned = get("QFrag_prunedGenIdx")
                     hflav = get("QHadron_flavour")
                     hq = get("QHadron_lineageV2QuarkIdx")
                     hquality = get("QHadron_lineageV2AssociationQuality")
@@ -150,6 +232,8 @@ def main():
                     qidx_old = get("QGenCharged_quarkIdx")
                     old_amb = get("QGenCharged_isAmbiguous")
                     old_hf = get("QGenCharged_isHFDecay")
+                    particle_pdg = get("QGenCharged_pdgId")
+                    last_pruned = get("QGenCharged_lastPrunedIdx")
                     v2h = get("QGenCharged_v2HadronIdx")
                     v2nearest = get("QGenCharged_v2NearestHeavyPrunedIdx")
                     v2hq = get("QGenCharged_v2HadronAssociationQuality")
@@ -174,6 +258,8 @@ def main():
                     accepted_unique_extra_by_q = Counter()
                     accepted_certain_extra_by_q = Counter()
                     accepted_daughters_by_hadron = Counter()
+                    accepted_daughters_by_q = Counter()
+                    additional_rows_by_q = defaultdict(list)
                     prompt_d_rows = set()
                     for hrow, (flav, origin, certain, quark) in enumerate(zip(hflav, horigin, hcertain, hq)):
                         if flav == 4 and origin == 1 and certain and 0 <= quark < len(qflav) and abs(qflav[quark]) == 4:
@@ -183,6 +269,29 @@ def main():
                         old_class = "unique" if qidx_old[row] >= 0 and not old_amb[row] else ("ambiguous" if old_amb[row] else "unresolved")
                         new_class = {1: "unique", 2: "ambiguous", 3: "unresolved", 0: "missing"}.get(v2quality[row], "unresolved")
                         transitions[(old_class, new_class)] += 1
+                        if qidx_old[row] >= 0 and not old_amb[row] and v2quality[row] == 2:
+                            summary["old_unique_to_v2_ambiguous"] += 1
+                            old_flavour = int(qpdg[qidx_old[row]]) if qidx_old[row] < len(qpdg) else 0
+                            reason_name = {1: "unique", 2: "multiple_candidate_lineages", 3: "no_quark_ancestor",
+                                           4: "incomplete_ancestry", 5: "lineage_without_QFrag", 6: "tied_nearest_heavy_hadrons"}.get(
+                                               int(v2reason[row]), "copied_QHadron_reason_%s" % v2reason[row])
+                            transition_breakdown[(particle_kind(particle_pdg[row]), int(particle_pdg[row]),
+                                                  int(get("QGenCharged_membershipType")[row]), int(v2mem[row]),
+                                                  old_flavour, reason_name, int(get("QGenCharged_v2NCandidateQuarkLineages")[row]),
+                                                  int(get("QGenCharged_v2NCandidateQFragSystems")[row]))] += 1
+                            if len(case_requests) < args.max_examples:
+                                request_counter += 1
+                                case_requests.append({"requestId": request_counter, "kind": "old_unique_to_v2_ambiguous",
+                                                      "run": event_key[0], "luminosityBlock": event_key[1], "event": event_key[2],
+                                                      "packedGenIdx": packed_idx, "lastPrunedIdx": int(last_pruned[row]),
+                                                      "pdgId": int(particle_pdg[row]), "pt": pt[row], "eta": eta[row],
+                                                      "oldQuarkIdx": int(qidx_old[row]), "oldQuarkPdgId": old_flavour,
+                                                      "qfragIdx": int(qidx_old[row]), "qfragPrunedIdx": int(qpruned[qidx_old[row]]) if qidx_old[row] < len(qpruned) else -1,
+                                                      "oldMembership": int(get("QGenCharged_membershipType")[row]),
+                                                      "v2Membership": int(v2mem[row]), "v2AssociationReason": int(v2reason[row]),
+                                                      "candidateLineages": int(get("QGenCharged_v2NCandidateQuarkLineages")[row]),
+                                                      "candidateQFragSystems": int(get("QGenCharged_v2NCandidateQFragSystems")[row]),
+                                                      "requestNote": reason_name})
                         summary["old_HF_decay"] += bool(old_hf[row])
                         summary["new_HF_decay"] += (v2mem[row] == 1)
                         summary["particles_with_selected_HF_ancestry"] += (v2h[row] >= 0)
@@ -255,16 +364,18 @@ def main():
                             summary["extra_unique_source_uncertain"] += not bool(v2certain[row])
                             if pt[row] >= 0.4 and abs(eta[row]) <= 2.5 and v2q[row] in prompt_qsystems:
                                 accepted_unique_extra_by_q[v2q[row]] += 1
+                                additional_rows_by_q[v2q[row]].append((row, packed_idx))
                                 summary["prompt_charm_additional_accepted_unique"] += 1
                                 if v2certain[row]:
                                     accepted_certain_extra_by_q[v2q[row]] += 1
                                     summary["prompt_charm_additional_accepted_source_certain"] += 1
                                 else:
                                     summary["prompt_charm_additional_accepted_unique_source_uncertain"] += 1
-                        if v2mem[row] == 1 and v2q[row] >= 0 and v2certain[row] and pt[row] >= 0.4 and abs(eta[row]) <= 2.5:
+                        if v2mem[row] == 1 and pt[row] >= 0.4 and abs(eta[row]) <= 2.5:
                             hrow = v2h[row]
                             if hrow in prompt_d_rows:
                                 accepted_daughters_by_hadron[hrow] += 1
+                                accepted_daughters_by_q[hq[hrow]] += 1
                     unique_system_bins = Counter()
                     certain_system_bins = Counter()
                     d_bins = Counter()
@@ -281,6 +392,37 @@ def main():
                         summary["prompt_D_with_%s_accepted_decay_descendants" % ("3plus" if count == 3 else count)] += d_bins[count]
                     for quark in sorted(prompt_qsystems):
                         drows = [hrow for hrow in prompt_d_rows if hq[hrow] == quark]
+                        dcount = accepted_daughters_by_q[quark]
+                        unique_count = accepted_unique_extra_by_q[quark]
+                        certain_count = accepted_certain_extra_by_q[quark]
+                        prompt_cross[("uniquely_associated", bin_count(dcount), bin_count(unique_count))] += 1
+                        prompt_cross[("source_certain_subset", bin_count(dcount), bin_count(certain_count))] += 1
+                        system_row = {"file": str(path), "run": event_key[0], "luminosityBlock": event_key[1],
+                                      "event": event_key[2], "qfragIdx": quark, "quarkPdgId": qpdg[quark],
+                                      "promptDHadronCount": len(drows), "acceptedDDecayTracks": dcount,
+                                      "additionalUniqueCandidates": unique_count,
+                                      "additionalUniqueSourceUncertain": unique_count - certain_count,
+                                      "additionalSourceCertain": certain_count,
+                                      "candidateLineageInterpretation": "association ancestry only; source certainty is separate"}
+                        prompt_system_rows.append(system_row)
+                        if unique_count >= 3:
+                            summary["prompt_charm_systems_with_ge3_additional_unique_accepted"] += 1
+                            high_mult_rows.append(dict(system_row))
+                            for row, packed_idx in additional_rows_by_q[quark][:3]:
+                                if sum(r["kind"] == "high_multiplicity_prompt_charm" for r in case_requests) >= args.max_examples:
+                                    break
+                                request_counter += 1
+                                case_requests.append({"requestId": request_counter, "kind": "high_multiplicity_prompt_charm",
+                                                      "run": event_key[0], "luminosityBlock": event_key[1], "event": event_key[2],
+                                                      "packedGenIdx": packed_idx, "lastPrunedIdx": int(last_pruned[row]),
+                                                      "pdgId": int(particle_pdg[row]), "pt": pt[row], "eta": eta[row],
+                                                      "oldQuarkIdx": int(qidx_old[row]), "oldQuarkPdgId": int(qpdg[quark]),
+                                                      "qfragIdx": int(quark), "qfragPrunedIdx": int(qpruned[quark]),
+                                                      "oldMembership": int(get("QGenCharged_membershipType")[row]),
+                                                      "v2Membership": int(v2mem[row]), "v2AssociationReason": int(v2reason[row]),
+                                                      "candidateLineages": int(get("QGenCharged_v2NCandidateQuarkLineages")[row]),
+                                                      "candidateQFragSystems": int(get("QGenCharged_v2NCandidateQFragSystems")[row]),
+                                                      "requestNote": "qfragIdx=%d; system has %d accepted unique candidates" % (quark, unique_count)})
                         acceptance_rows.append({"file": str(path), "run": event_key[0], "luminosityBlock": event_key[1],
                                                 "event": event_key[2], "qfragIdx": quark,
                                                 "additionalAcceptedChargedUnique": accepted_unique_extra_by_q[quark],
@@ -308,6 +450,46 @@ def main():
                   ["file", "run", "luminosityBlock", "event", "qfragIdx", "additionalAcceptedChargedUnique",
                    "additionalAcceptedChargedSourceCertain", "additionalAcceptedChargedUniqueSourceUncertain", "promptDCount",
                    "promptDObjectsWithExactlyTwoAcceptedChargedDaughters", "sourceCertaintyNote"])
+        cross_rows = [{"candidate_basis": basis, "accepted_D_decay_tracks": d_bin,
+                       "accepted_additional_candidates": a_bin, "prompt_charm_systems": count}
+                      for (basis, d_bin, a_bin), count in sorted(prompt_cross.items())]
+        exact_two = [row for row in prompt_system_rows if row["acceptedDDecayTracks"] == 2]
+        denominator = len(exact_two)
+        unique_numerator = sum(row["additionalUniqueCandidates"] > 0 for row in exact_two)
+        certain_numerator = sum(row["additionalSourceCertain"] > 0 for row in exact_two)
+        cross_rows.extend([
+            {"candidate_basis": "fraction_exactly_2_D_tracks_with_ge1_additional", "accepted_D_decay_tracks": "2",
+             "accepted_additional_candidates": "ge1", "prompt_charm_systems": denominator,
+             "numerator": unique_numerator, "fraction": unique_numerator / denominator if denominator else ""},
+            {"candidate_basis": "fraction_exactly_2_D_tracks_with_ge1_source_certain", "accepted_D_decay_tracks": "2",
+             "accepted_additional_candidates": "ge1", "prompt_charm_systems": denominator,
+             "numerator": certain_numerator, "fraction": certain_numerator / denominator if denominator else ""},
+        ])
+        write_csv(prefix.with_name(prefix.name + "_prompt_charm_cross_tab.csv"), cross_rows,
+                  ["candidate_basis", "accepted_D_decay_tracks", "accepted_additional_candidates", "prompt_charm_systems", "numerator", "fraction"])
+        write_csv(prefix.with_name(prefix.name + "_prompt_charm_systems.csv"), prompt_system_rows,
+                  ["file", "run", "luminosityBlock", "event", "qfragIdx", "quarkPdgId", "promptDHadronCount",
+                   "acceptedDDecayTracks", "additionalUniqueCandidates", "additionalUniqueSourceUncertain",
+                   "additionalSourceCertain", "candidateLineageInterpretation"])
+        write_csv(prefix.with_name(prefix.name + "_high_multiplicity_prompt_charm.csv"), high_mult_rows,
+                  ["file", "run", "luminosityBlock", "event", "qfragIdx", "quarkPdgId", "promptDHadronCount",
+                   "acceptedDDecayTracks", "additionalUniqueCandidates", "additionalUniqueSourceUncertain",
+                   "additionalSourceCertain", "candidateLineageInterpretation"])
+        transition_rows = [{"particle_type": kind, "pdgId": pdg, "old_membership": old_mem, "v2_membership": new_mem,
+                            "old_quark_pdgId": flavour, "v2_ambiguity_reason": reason,
+                            "candidate_lineages": lineages, "candidate_qfrag_systems": systems, "count": count}
+                           for (kind, pdg, old_mem, new_mem, flavour, reason, lineages, systems), count
+                           in sorted(transition_breakdown.items())]
+        write_csv(prefix.with_name(prefix.name + "_old_unique_to_v2_ambiguous.csv"), transition_rows,
+                  ["particle_type", "pdgId", "old_membership", "v2_membership", "old_quark_pdgId",
+                   "v2_ambiguity_reason", "candidate_lineages", "candidate_qfrag_systems", "count"])
+        chains = read_fwlite_chains(args.miniAOD[file_number], case_requests) if args.miniAOD else {}
+        for request in case_requests:
+            request["motherChain"] = chains.get(request["requestId"], "NOT_REQUESTED; pass matching --miniAOD for generator mother links")
+        write_csv(prefix.with_name(prefix.name + "_representative_cases.csv"), case_requests,
+                  ["kind", "run", "luminosityBlock", "event", "packedGenIdx", "lastPrunedIdx", "pdgId", "pt", "eta",
+                   "oldQuarkIdx", "oldQuarkPdgId", "qfragIdx", "qfragPrunedIdx", "oldMembership", "v2Membership", "v2AssociationReason",
+                   "candidateLineages", "candidateQFragSystems", "requestNote", "motherChain"])
         # Unique ancestry acceptance and the stricter source-certain subset are
         # reported independently to expose the effect of the certainty policy.
         if summary["invariant_failures"]:
