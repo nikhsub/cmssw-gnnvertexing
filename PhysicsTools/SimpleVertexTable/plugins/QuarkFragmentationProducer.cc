@@ -519,10 +519,10 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
         hLineageLast[ih] = lineage.terminal;
         hLineagePreHad[ih] = preHad;
         hNCopiesSelected[ih] = lineage.copies.size();
-        if (lineage.root >= 0) hLineageRootFlags[ih] = (*pruned)[lineage.root].statusFlags().flags_;
-        if (lineage.hard >= 0) hLineageHardFlags[ih] = (*pruned)[lineage.hard].statusFlags().flags_;
-        if (lineage.terminal >= 0) hLineageLastFlags[ih] = (*pruned)[lineage.terminal].statusFlags().flags_;
-        if (preHad >= 0) hLineagePreHadFlags[ih] = (*pruned)[preHad].statusFlags().flags_;
+        if (lineage.root >= 0) hLineageRootFlags[ih] = static_cast<int>((*pruned)[lineage.root].statusFlags().flags_.to_ulong());
+        if (lineage.hard >= 0) hLineageHardFlags[ih] = static_cast<int>((*pruned)[lineage.hard].statusFlags().flags_.to_ulong());
+        if (lineage.terminal >= 0) hLineageLastFlags[ih] = static_cast<int>((*pruned)[lineage.terminal].statusFlags().flags_.to_ulong());
+        if (preHad >= 0) hLineagePreHadFlags[ih] = static_cast<int>((*pruned)[preHad].statusFlags().flags_.to_ulong());
         if (lineage.branching) {
           hLineageQuality[ih] = kLineageUnknown;
           hLineageReason[ih] = kLineageCopyBranching;
