@@ -36,6 +36,17 @@ namespace {
   enum MembershipReason { kReasonHFDecay = 1, kReasonRetainedFragmentation = 2, kReasonAmbiguousMembership = 3, kReasonUnassigned = 4 };
   enum RepresentativeReason { kReasonUniqueTerminalCopy = 1 };
 
+  // Alternative lineage-association enums. These do not alter the legacy
+  // associationQuality/charmOrigin values above.
+  enum LineageQuality { kLineageMissing = 0, kLineageUnique = 1, kLineageAmbiguous = 2, kLineageUnknown = 3 };
+  enum LineageReason { kLineageUniqueReason = 1, kLineageMultipleCompatible = 2, kLineageNoCompatible = 3,
+                       kLineageIncomplete = 4, kLineageUnsupportedHadron = 5, kLineageCopyBranching = 6,
+                       kLineageNoQFragSystem = 7, kLineageMultiHeavy = 8, kLineageMultipleBOrigins = 9,
+                       kLineageOriginUnresolved = 10 };
+  enum LineageOrigin { kLineageOriginNA = 0, kLineagePromptD = 1, kLineageBtoD = 2, kLineageOriginUnknown = 3 };
+  enum HeavyContent { kContentUnsupported = 0, kContentCharm = 4, kContentAntiCharm = -4,
+                      kContentBottom = 5, kContentAntiBottom = -5, kContentMultiHeavy = 6 };
+
   bool isQuark(int id) { return std::abs(id) >= 1 && std::abs(id) <= 5; }
   int flavour(int id) { return std::abs(id); }
   bool isBHadron(int id) {
@@ -50,6 +61,29 @@ namespace {
   }
   bool isHeavyHadron(int id) { return isBHadron(id) || isDHadron(id); }
   int hadronFlavour(int id) { return isBHadron(id) ? 5 : (isDHadron(id) ? 4 : 0); }
+
+  // Explicitly cover the open-heavy species selected by isBHadron/isDHadron.
+  // Unsupported and multi-heavy species stay distinct; PDG sign alone is not
+  // used because meson and baryon conventions differ.
+  int heavyContent(int id) {
+    const int a = std::abs(id), sign = id < 0 ? -1 : 1;
+    if (a == 541 || a == 5142 || a == 5242 || a == 5342 || a == 5512 || a == 5532 || a == 5542 || a == 5554 || a == 4412 || a == 4422 || a == 4432 || a == 4444)
+      return kContentMultiHeavy;
+    if (a == 411 || a == 421 || a == 431) return sign > 0 ? kContentCharm : kContentAntiCharm;
+    if (a == 4122 || a == 4132 || a == 4232 || a == 4332) return sign > 0 ? kContentCharm : kContentAntiCharm;
+    if (a == 511 || a == 521 || a == 531) return sign > 0 ? kContentAntiBottom : kContentBottom;
+    if (a == 5122 || a == 5132 || a == 5232 || a == 5332) return sign > 0 ? kContentBottom : kContentAntiBottom;
+    return kContentUnsupported;
+  }
+
+  struct QuarkLineage {
+    int pdgId = 0;
+    std::vector<int> copies;
+    int hard = -1;
+    int root = -1;
+    int terminal = -1;
+    bool branching = false;
+  };
 
   struct Ancestors {
     std::vector<int> indices;
@@ -250,6 +284,8 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   // member of that chain when exactly one is retained.
   std::vector<int> qRep, qHard, qLast, qFirst, qCopies, qMothers, qSameMother, qSameDaughter, qCopyDepth, qCopyAmbiguous, qSelectionReason;
   std::unordered_map<int, int> prunedToQFrag;
+  std::unordered_map<int, int> prunedToLineage;
+  std::vector<QuarkLineage> quarkLineages;
   std::unordered_set<int> handledQuarks;
   for (size_t i = 0; i < pruned->size(); ++i) {
     if (!isQuark((*pruned)[i].pdgId()) || handledQuarks.count(i)) continue;
@@ -260,12 +296,6 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
       if (isFinalCopy(member, *pruned, prunedIndex)) terminal.push_back(member);
       if ((*pruned)[member].statusFlags().isHardProcess()) hard.push_back(member);
     }
-    if (terminal.size() != 1) continue;  // preserves ambiguous split histories without inventing a system
-    const int row = static_cast<int>(qRep.size());
-    const int representative = terminal.front();
-    qRep.push_back(representative);
-    qLast.push_back(representative);
-    qHard.push_back(hard.size() == 1 ? hard.front() : -1);
     std::unordered_set<int> componentSet(component.begin(), component.end());
     std::vector<int> roots;
     bool branching = false;
@@ -286,6 +316,33 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
       }
       if (sameDaughters > 1) branching = true;
     }
+    QuarkLineage lineage;
+    lineage.pdgId = (*pruned)[component.front()].pdgId();
+    lineage.copies = component;
+    std::vector<int> hardRoots;
+    for (const int member : hard) {
+      bool hasHardCopyMother = false;
+      const auto& particle = (*pruned)[member];
+      for (size_t im = 0; im < particle.numberOfMothers(); ++im) {
+        const auto found = prunedIndex.find(particle.mother(im));
+        if (particle.mother(im) && found != prunedIndex.end() && componentSet.count(found->second) &&
+            (*pruned)[found->second].statusFlags().isHardProcess()) hasHardCopyMother = true;
+      }
+      if (!hasHardCopyMother) hardRoots.push_back(member);
+    }
+    lineage.hard = hardRoots.size() == 1 ? hardRoots.front() : -1;
+    lineage.root = roots.size() == 1 ? roots.front() : -1;
+    lineage.terminal = terminal.size() == 1 ? terminal.front() : -1;
+    lineage.branching = branching || roots.size() != 1 || terminal.size() != 1;
+    const int lineageId = static_cast<int>(quarkLineages.size());
+    quarkLineages.push_back(lineage);
+    for (const int member : component) prunedToLineage[member] = lineageId;
+    if (terminal.size() != 1) continue;  // legacy QFrag selection remains unchanged
+    const int row = static_cast<int>(qRep.size());
+    const int representative = terminal.front();
+    qRep.push_back(representative);
+    qLast.push_back(representative);
+    qHard.push_back(hard.size() == 1 ? hard.front() : -1);
     qFirst.push_back(roots.size() == 1 ? roots.front() : -1);
     qCopies.push_back(component.size()); qMothers.push_back((*pruned)[representative].numberOfMothers());
     const auto& rep = (*pruned)[representative];
@@ -310,6 +367,15 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   std::vector<int> hNCandidates(hPruned.size(), 0), hNCandidateC(hPruned.size(), 0), hNCandidateB(hPruned.size(), 0), hNCandidateLight(hPruned.size(), 0), hNDistinctLineages(hPruned.size(), -1), hNCandidateCopies(hPruned.size(), 0);
   std::vector<int> hMultiCandidates(hPruned.size(), 0), hConflictingFlavours(hPruned.size(), 0), hNMothers(hPruned.size(), 0), hHasB(hPruned.size(), 0), hHasD(hPruned.size(), 0), hHasCQuark(hPruned.size(), 0), hHasBQuark(hPruned.size(), 0), hMultipleBranches(hPruned.size(), 0), hAncestryDepth(hPruned.size(), 0), hAncestryTruncated(hPruned.size(), 0), hAncestryIncomplete(hPruned.size(), 0), hAncestryExhausted(hPruned.size(), 0), hCycle(hPruned.size(), 0), hAssocReason(hPruned.size(), kReasonNoQuarkAncestor), hOriginReason(hPruned.size(), kOriginNotD), hCandidateSystems(hPruned.size(), 0);
   std::vector<std::vector<int>> hadCandidateCopies(hPruned.size());
+  std::vector<int> hLineageQ(hPruned.size(), -1), hLineageQuality(hPruned.size(), kLineageMissing), hLineageReason(hPruned.size(), kLineageNoCompatible);
+  std::vector<int> hLineagePdg(hPruned.size(), 0), hLineageRoot(hPruned.size(), -1), hLineageHard(hPruned.size(), -1), hLineageLast(hPruned.size(), -1), hLineagePreHad(hPruned.size(), -1);
+  std::vector<int> hLineageRootFlags(hPruned.size(), -1), hLineageHardFlags(hPruned.size(), -1), hLineageLastFlags(hPruned.size(), -1), hLineagePreHadFlags(hPruned.size(), -1);
+  std::vector<int> hNLineages(hPruned.size(), 0), hNCompatible(hPruned.size(), 0), hNIncompatible(hPruned.size(), 0), hNCopiesSelected(hPruned.size(), 0), hLineageCandidateCopies(hPruned.size(), 0), hNLightContributors(hPruned.size(), 0), hLineageContent(hPruned.size(), kContentUnsupported);
+  std::vector<int> hLineageParentB(hPruned.size(), -1), hLineageOrigin(hPruned.size(), kLineageOriginNA), hLineageOriginReason(hPruned.size(), kLineageOriginNA);
+  std::vector<float> hLineageHardPt(hPruned.size(), kInvalid), hLineageHardEta(hPruned.size(), kInvalid), hLineageHardPhi(hPruned.size(), kInvalid);
+  std::vector<float> hLineagePreHadPt(hPruned.size(), kInvalid), hLineagePreHadEta(hPruned.size(), kInvalid), hLineagePreHadPhi(hPruned.size(), kInvalid);
+  std::vector<float> hLineageZ(hPruned.size(), kInvalid), hLineageDR(hPruned.size(), kInvalid);
+  std::vector<std::vector<int>> hCompatibleLineages(hPruned.size());
   ++debugEventsSeen_;
   unsigned int debuggedHadrons = 0;
   for (size_t ih = 0; ih < hPruned.size(); ++ih) {
@@ -358,11 +424,159 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
                            : ((*pruned)[hPruned[ih]].statusFlags().isPrompt() ? kOriginPromptFlag
                               : (ancestry.truncated ? kOriginDepthGuard : (ancestry.incomplete ? kOriginMissingLink : kOriginNoRetainedEvidence)));
     }
+
+    // Alternative heavy-flavour-aware pass. For a D with exactly one retained
+    // selected B ancestor, search the B ancestry as the fragmentation source.
+    const int hadronId = (*pruned)[hPruned[ih]].pdgId();
+    const bool isD = isDHadron(hadronId);
+    int sourcePruned = hPruned[ih];
+    bool lineageSourceKnown = !isD;
+    if (isD && bAncestors.size() == 1) {
+      const int bRow = *bAncestors.begin();
+      hLineageParentB[ih] = bRow;
+      sourcePruned = hPruned[bRow];
+      lineageSourceKnown = true;
+      hLineageOrigin[ih] = kLineageBtoD;
+      hLineageOriginReason[ih] = 1;  // one retained selected B ancestor
+    } else if (isD && bAncestors.size() > 1) {
+      hLineageOrigin[ih] = kLineageOriginUnknown;
+      hLineageOriginReason[ih] = 2;  // multiple retained selected B ancestors
+    } else if (isD && !hadFromB[ih] && (*pruned)[hPruned[ih]].statusFlags().isPrompt()) {
+      lineageSourceKnown = true;
+      hLineageOrigin[ih] = kLineagePromptD;
+      hLineageOriginReason[ih] = 3;  // explicit prompt status flag only
+    } else if (isD) {
+      hLineageOrigin[ih] = kLineageOriginUnknown;
+      hLineageOriginReason[ih] = hadFromB[ih] || ancestry.incomplete || ancestry.truncated ? 4 : 5;
+    }
+    const int content = heavyContent((*pruned)[sourcePruned].pdgId());
+    hLineageContent[ih] = content;
+    if (!lineageSourceKnown) {
+      hLineageQuality[ih] = kLineageUnknown;
+      hLineageReason[ih] = bAncestors.size() > 1 ? kLineageMultipleBOrigins : kLineageOriginUnresolved;
+    } else if (content == kContentUnsupported || content == kContentMultiHeavy) {
+      hLineageQuality[ih] = kLineageUnknown;
+      hLineageReason[ih] = content == kContentMultiHeavy ? kLineageMultiHeavy : kLineageUnsupportedHadron;
+    } else {
+      const Ancestors sourceAncestry = ancestors(sourcePruned, *pruned, prunedIndex);
+      std::unordered_map<int, unsigned int> distances;
+      std::queue<std::pair<int, unsigned int>> distanceQueue;
+      distances[sourcePruned] = 0;
+      distanceQueue.push({sourcePruned, 0});
+      while (!distanceQueue.empty()) {
+        const int node = distanceQueue.front().first;
+        const unsigned int depth = distanceQueue.front().second;
+        distanceQueue.pop();
+        const auto& particle = (*pruned)[node];
+        for (size_t im = 0; im < particle.numberOfMothers(); ++im) {
+          const auto found = prunedIndex.find(particle.mother(im));
+          if (particle.mother(im) && found != prunedIndex.end() && !distances.count(found->second)) {
+            distances[found->second] = depth + 1;
+            distanceQueue.push({found->second, depth + 1});
+          }
+        }
+      }
+      std::unordered_set<int> candidateLineages, compatible;
+      int rawCopies = 0, lightLineages = 0;
+      std::unordered_set<int> gluonContributors;
+      for (const int ancestor : sourceAncestry.indices) {
+        if ((*pruned)[ancestor].pdgId() == 21) gluonContributors.insert(ancestor);
+        if (!isQuark((*pruned)[ancestor].pdgId())) continue;
+        ++rawCopies;
+        const auto lineage = prunedToLineage.find(ancestor);
+        if (lineage == prunedToLineage.end()) continue;
+        candidateLineages.insert(lineage->second);
+        if ((*pruned)[ancestor].pdgId() == content) compatible.insert(lineage->second);
+      }
+      hNLineages[ih] = candidateLineages.size();
+      hNCompatible[ih] = compatible.size();
+      hCompatibleLineages[ih].assign(compatible.begin(), compatible.end());
+      hLineageCandidateCopies[ih] = rawCopies;
+      for (const int lineageId : candidateLineages) {
+        const int f = std::abs(quarkLineages[lineageId].pdgId);
+        if (f >= 4 && f <= 5 && !compatible.count(lineageId)) ++hNIncompatible[ih];
+        if (f <= 3) ++lightLineages;
+      }
+      hNLightContributors[ih] = lightLineages + gluonContributors.size();
+      if (compatible.size() > 1) {
+        hLineageQuality[ih] = kLineageAmbiguous;
+        hLineageReason[ih] = kLineageMultipleCompatible;
+      } else if (compatible.empty()) {
+        hLineageQuality[ih] = (sourceAncestry.incomplete || sourceAncestry.truncated) ? kLineageUnknown : kLineageMissing;
+        hLineageReason[ih] = (sourceAncestry.incomplete || sourceAncestry.truncated) ? kLineageIncomplete : kLineageNoCompatible;
+      } else {
+        const int lineageId = *compatible.begin();
+        const auto& lineage = quarkLineages[lineageId];
+        int preHad = -1;
+        unsigned int bestDistance = std::numeric_limits<unsigned int>::max();
+        for (const int copy : lineage.copies) {
+          const auto d = distances.find(copy);
+          if (d != distances.end() && d->second < bestDistance) { preHad = copy; bestDistance = d->second; }
+        }
+        hLineagePdg[ih] = lineage.pdgId;
+        hLineageRoot[ih] = lineage.root;
+        hLineageHard[ih] = lineage.hard;
+        hLineageLast[ih] = lineage.terminal;
+        hLineagePreHad[ih] = preHad;
+        hNCopiesSelected[ih] = lineage.copies.size();
+        if (lineage.root >= 0) hLineageRootFlags[ih] = (*pruned)[lineage.root].statusFlags().flags_;
+        if (lineage.hard >= 0) hLineageHardFlags[ih] = (*pruned)[lineage.hard].statusFlags().flags_;
+        if (lineage.terminal >= 0) hLineageLastFlags[ih] = (*pruned)[lineage.terminal].statusFlags().flags_;
+        if (preHad >= 0) hLineagePreHadFlags[ih] = (*pruned)[preHad].statusFlags().flags_;
+        if (lineage.branching) {
+          hLineageQuality[ih] = kLineageUnknown;
+          hLineageReason[ih] = kLineageCopyBranching;
+        } else if (preHad < 0) {
+          hLineageQuality[ih] = kLineageUnknown;
+          hLineageReason[ih] = kLineageIncomplete;
+        } else {
+          const auto qrow = prunedToQFrag.find(preHad);
+          if (sourceAncestry.incomplete || sourceAncestry.truncated) {
+            hLineageQuality[ih] = kLineageUnknown;
+            hLineageReason[ih] = kLineageIncomplete;
+          } else if (qrow == prunedToQFrag.end()) {
+            hLineageQuality[ih] = kLineageUnknown;
+            hLineageReason[ih] = kLineageNoQFragSystem;
+          } else {
+            hLineageQ[ih] = qrow->second;
+            hLineageQuality[ih] = kLineageUnique;
+            hLineageReason[ih] = kLineageUniqueReason;
+            const auto& q = (*pruned)[preHad];
+            const float q2 = q.px()*q.px() + q.py()*q.py() + q.pz()*q.pz();
+            if (q2 > 0.f) {
+              hLineageZ[ih] = ((*pruned)[hPruned[ih]].px()*q.px() + (*pruned)[hPruned[ih]].py()*q.py() + (*pruned)[hPruned[ih]].pz()*q.pz()) / q2;
+              hLineageDR[ih] = reco::deltaR((*pruned)[hPruned[ih]].eta(), (*pruned)[hPruned[ih]].phi(), q.eta(), q.phi());
+              hLineagePreHadPt[ih] = q.pt(); hLineagePreHadEta[ih] = q.eta(); hLineagePreHadPhi[ih] = q.phi();
+            }
+            if (lineage.hard >= 0) {
+              const auto& hard = (*pruned)[lineage.hard];
+              hLineageHardPt[ih] = hard.pt(); hLineageHardEta[ih] = hard.eta(); hLineageHardPhi[ih] = hard.phi();
+            }
+          }
+        }
+      }
+    }
     if (debugAncestry_ && debugEventsSeen_ <= debugMaxEvents_ && debuggedHadrons < debugMaxHadronsPerEvent_ &&
-        (!debugOnlyAmbiguous_ || hadAssocQ[ih] == kAmbiguous) &&
+        (!debugOnlyAmbiguous_ || hadAssocQ[ih] == kAmbiguous || hLineageQuality[ih] == kLineageAmbiguous || hLineageQuality[ih] == kLineageUnknown) &&
         (!debugOnlyD_ || isDHadron((*pruned)[hPruned[ih]].pdgId()))) {
       logAncestry(event, ih, hPruned[ih], *pruned, prunedIndex, hadCandidateCopies[ih], ancestry, hadQuark[ih],
                   hadAssocQ[ih], hAssocReason[ih], hadCharmOrigin[ih], hOriginReason[ih], debugMaxDepth_);
+      auto lineageLog = edm::LogInfo("QFragAncestry");
+      lineageLog << "Alternative lineage QHadron=" << ih << " prunedGenIdx=" << hPruned[ih]
+                 << " pdgId=" << (*pruned)[hPruned[ih]].pdgId() << " heavyContent=" << hLineageContent[ih]
+                 << " oldQuarkIdx=" << hadQuark[ih] << " oldQuality=" << hadAssocQ[ih]
+                 << " candidateCopies=" << hLineageCandidateCopies[ih] << " distinctLineages=" << hNLineages[ih]
+                 << " compatible=" << hNCompatible[ih] << " incompatibleHF=" << hNIncompatible[ih]
+                 << " selectedQFrag=" << hLineageQ[ih] << " selectedPdgId=" << hLineagePdg[ih]
+                 << " hardIdx=" << hLineageHard[ih] << " lastIdx=" << hLineageLast[ih]
+                 << " preHadIdx=" << hLineagePreHad[ih] << " quality=" << hLineageQuality[ih]
+                 << " reason=" << hLineageReason[ih] << " oldOrigin=" << hadCharmOrigin[ih]
+                 << " lineageOrigin=" << hLineageOrigin[ih];
+      for (const int lineageId : hCompatibleLineages[ih]) {
+        const auto& lineage = quarkLineages[lineageId];
+        lineageLog << "\n  compatible pdgId=" << lineage.pdgId << " copies=";
+        for (const int copy : lineage.copies) lineageLog << copy << ',';
+      }
       ++debuggedHadrons;
     }
   }
@@ -456,6 +670,31 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   hTable->addColumn<int>("nCandidateQuarks",hNCandidates,"number of existing QFrag systems reached in retained ancestry"); hTable->addColumn<int>("nCandidateCharm",hNCandidateC,"candidate QFrag systems with charm flavour"); hTable->addColumn<int>("nCandidateBottom",hNCandidateB,"candidate QFrag systems with bottom flavour"); hTable->addColumn<int>("nCandidateLight",hNCandidateLight,"candidate QFrag systems with u/d/s flavour"); hTable->addColumn<int>("nDistinctQuarkLineages",hNDistinctLineages,"-1: physical lineages are not identifiable reliably"); hTable->addColumn<int>("nCandidateQuarkCopies",hNCandidateCopies,"number of distinct retained ancestor quark records before QFrag copy grouping"); hTable->addColumn<int>("nCandidateQuarkSystems",hCandidateSystems,"number of existing QFrag copy components among candidate ancestors"); hTable->addColumn<int>("hasMultipleQuarkCandidates",hMultiCandidates,"more than one QFrag system reached"); hTable->addColumn<int>("hasConflictingQuarkFlavours",hConflictingFlavours,"candidate systems have multiple absolute flavours");
   hTable->addColumn<int>("nAvailableMothers",hNMothers,"direct mother count of this hadron record"); hTable->addColumn<int>("hasBHadronAncestor",hHasB,"retained B-hadron ancestor"); hTable->addColumn<int>("hasCHadronAncestor",hHasD,"retained D-hadron ancestor"); hTable->addColumn<int>("hasCharmQuarkAncestor",hHasCQuark,"retained charm quark ancestor"); hTable->addColumn<int>("hasBottomQuarkAncestor",hHasBQuark,"retained bottom quark ancestor"); hTable->addColumn<int>("hasMultipleMotherBranches",hMultipleBranches,"an ancestor record has more than one mother"); hTable->addColumn<int>("ancestryDepth",hAncestryDepth,"maximum discovered breadth-first retained ancestry depth"); hTable->addColumn<int>("ancestryTruncated",hAncestryTruncated,"depth guard reached"); hTable->addColumn<int>("ancestryIncomplete",hAncestryIncomplete,"null or non-pruned mother reference encountered"); hTable->addColumn<int>("ancestryExhausted",hAncestryExhausted,"retained traversal ended without detected truncation/reference gap; not proof physical history is complete"); hTable->addColumn<int>("ancestryCycleDetected",hCycle,"cycle found in retained mother graph");
   hTable->addColumn<int>("associationReason",hAssocReason,"1 unique retained QFrag component, 2 multiple components, 3 no quark ancestor, 4 quark ancestor(s) found but none mapped to a selected QFrag row"); hTable->addColumn<int>("originReason",hOriginReason,"0 not D, 1 retained B ancestor, 2 explicit prompt status flag, 3 no retained B or prompt flag, 4 traversal depth-limited, 5 missing retained link");
+  hTable->addColumn<int>("lineageQuarkIdx",hLineageQ,"alternative heavy-flavour lineage QFrag row, or -1");
+  hTable->addColumn<int>("lineageAssociationQuality",hLineageQuality,"0 missing, 1 unique, 2 ambiguous, 3 unknown/incomplete");
+  hTable->addColumn<int>("lineageAssociationReason",hLineageReason,"1 unique compatible lineage, 2 multiple compatible, 3 no compatible, 4 incomplete ancestry, 5 unsupported hadron, 6 branching copy lineage, 7 no QFrag mapping, 8 multi-heavy hadron, 9 multiple B origins, 10 unresolved D origin");
+  hTable->addColumn<int>("lineageHeavyContent",hLineageContent,"4 c, -4 anti-c, 5 b, -5 anti-b, 6 multi-heavy, 0 unsupported");
+  hTable->addColumn<int>("lineageQuarkPdgId",hLineagePdg,"signed selected lineage PDG ID, or 0");
+  hTable->addColumn<int>("nCandidateQuarkCopiesLineage",hLineageCandidateCopies,"raw retained quark records in alternative source ancestry");
+  hTable->addColumn<int>("nLineageCandidateSystems",hNLineages,"explicit-link signed-PDG copy components in alternative source ancestry");
+  hTable->addColumn<int>("nCompatibleHFLineages",hNCompatible,"distinct lineages matching signed valence heavy flavour");
+  hTable->addColumn<int>("nIncompatibleHFLineages",hNIncompatible,"other retained charm/bottom lineages");
+  hTable->addColumn<int>("nLightPartonContributors",hNLightContributors,"retained u/d/s lineages plus gluon records; diagnostic only");
+  hTable->addColumn<int>("nQuarkCopiesInSelectedLineage",hNCopiesSelected,"copy records in selected lineage, or 0");
+  hTable->addColumn<int>("lineageHardPrunedIdx",hLineageHard,"unique retained hard-process copy index, or -1");
+  hTable->addColumn<int>("lineageRootPrunedIdx",hLineageRoot,"unique root copy index, or -1");
+  hTable->addColumn<int>("lineageLastPrunedIdx",hLineageLast,"unique terminal retained copy index, or -1");
+  hTable->addColumn<int>("lineagePreHadPrunedIdx",hLineagePreHad,"closest retained lineage copy in source ancestry, or -1");
+  hTable->addColumn<int>("lineageRootStatusFlags",hLineageRootFlags,"retained root status flags, or -1");
+  hTable->addColumn<int>("lineageHardStatusFlags",hLineageHardFlags,"retained hard-copy status flags, or -1");
+  hTable->addColumn<int>("lineageLastStatusFlags",hLineageLastFlags,"retained terminal status flags, or -1");
+  hTable->addColumn<int>("lineagePreHadStatusFlags",hLineagePreHadFlags,"retained pre-hadronization-copy status flags, or -1");
+  hTable->addColumn<float>("lineageHardPt",hLineageHardPt,"hard-copy pt or -999"); hTable->addColumn<float>("lineageHardEta",hLineageHardEta,"hard-copy eta or -999"); hTable->addColumn<float>("lineageHardPhi",hLineageHardPhi,"hard-copy phi or -999");
+  hTable->addColumn<float>("lineagePreHadPt",hLineagePreHadPt,"closest-to-hadron retained copy pt or -999"); hTable->addColumn<float>("lineagePreHadEta",hLineagePreHadEta,"closest-to-hadron retained copy eta or -999"); hTable->addColumn<float>("lineagePreHadPhi",hLineagePreHadPhi,"closest-to-hadron retained copy phi or -999");
+  hTable->addColumn<float>("lineageZHadron",hLineageZ,"3-vector projection on selected pre-hadron copy, unclipped, or -999"); hTable->addColumn<float>("lineageDeltaRHadron",hLineageDR,"deltaR to selected pre-hadron copy or -999");
+  hTable->addColumn<int>("lineageParentBHadronIdx",hLineageParentB,"unique retained selected B QHadron row for D, or -1");
+  hTable->addColumn<int>("lineageOriginCategory",hLineageOrigin,"0 n/a, 1 explicitly prompt D, 2 retained B-to-D, 3 unknown");
+  hTable->addColumn<int>("lineageOriginReason",hLineageOriginReason,"0 n/a, 1 unique retained B, 2 multiple B ancestors, 3 explicit prompt flag, 4 incomplete/unmapped B evidence, 5 no retained B or prompt evidence");
 
   auto cTable = std::make_unique<nanoaod::FlatTable>(cPacked.size(), "QGenCharged", false, false);
   cTable->addColumn<int>("packedGenIdx",cPacked,"packedGenParticles index"); cTable->addColumn<int>("pdgId",cPdg,"signed PDG identifier"); cTable->addColumn<int>("charge",cCharge,"electric charge"); cTable->addColumn<float>("pt",cPt,"pt"); cTable->addColumn<float>("eta",cEta,"eta"); cTable->addColumn<float>("phi",cPhi,"phi"); cTable->addColumn<float>("mass",cMass,"mass"); cTable->addColumn<int>("quarkIdx",cQuark,"QFrag row or -1"); cTable->addColumn<int>("hadronIdx",cHadron,"QHadron row or -1"); cTable->addColumn<int>("lastPrunedIdx",cLastPruned,"lastPrunedRef key or -1"); cTable->addColumn<int>("isHFDecay",cHFDecay,"unique selected heavy-hadron ancestor"); cTable->addColumn<int>("isDirectHFDecay",cDirectHFDecay,"generator direct-hadron-decay flag"); cTable->addColumn<int>("isFragmentation",cFragmentation,"retained quark ancestry outside selected HF decay"); cTable->addColumn<int>("isFromB",cFromB,"retained B ancestor"); cTable->addColumn<int>("isFromPromptD",cFromPromptD,"retained confirmed-prompt D ancestor"); cTable->addColumn<int>("isFromBtoD",cFromBtoD,"both B and D retained ancestors"); cTable->addColumn<int>("membershipType",cMembership,"0 unassigned, 1 HF decay, 2 retained fragmentation, 3 ambiguous"); cTable->addColumn<int>("isAmbiguous",cAmbiguous,"multiple retained systems or HF ancestors"); cTable->addColumn<float>("deltaRQuark",cDR,"quark deltaR or -999"); cTable->addColumn<float>("zTrackQuark",cZ,"quark projection or -999"); cTable->addColumn<float>("jTQuark",cJT,"transverse momentum to quark or -999");
