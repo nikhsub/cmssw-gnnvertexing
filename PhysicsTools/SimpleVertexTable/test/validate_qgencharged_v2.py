@@ -23,15 +23,25 @@ def write_csv(path, rows, fields):
 
 def load_reference(filename, tree_name):
     """Index a pre-update output by event identity, preserving each table's row order."""
+    qgen_names = ["QGenCharged_packedGenIdx", "QGenCharged_pdgId", "QGenCharged_pt", "QGenCharged_eta",
+             "QGenCharged_hadronIdx", "QGenCharged_isHFDecay", "QGenCharged_isDirectHFDecay", "QGenCharged_membershipType",
+             "QGenCharged_isFromB", "QGenCharged_isFromPromptD", "QGenCharged_isFromBtoD",
+             "QGenCharged_v2HadronIdx", "QGenCharged_v2NearestHeavyPrunedIdx",
+             "QGenCharged_v2HadronAssociationQuality", "QGenCharged_v2HadronAssociationReason",
+             "QGenCharged_v2QuarkIdx", "QGenCharged_v2AssociationQuality", "QGenCharged_v2AssociationReason",
+             "QGenCharged_v2MembershipType", "QGenCharged_v2FragmentationSourceCertain",
+             "QGenCharged_v2IsFromUnknownD", "QGenCharged_v2NNearestHeavyHadrons",
+             "QGenCharged_v2NCandidateQuarkLineages", "QGenCharged_v2NCandidateQFragSystems"]
     names = ["run", "luminosityBlock", "event", "QFrag_prunedGenIdx", "QHadron_prunedGenIdx",
              "QHadron_lineageV2QuarkIdx", "QHadron_lineageV2QuarkPdgId", "QHadron_lineageV2AssociationQuality",
              "QHadron_lineageV2AssociationReason", "QHadron_lineageV2OriginCategory",
              "QHadron_lineageV2SourceCategory", "QHadron_lineageV2SourceReason",
-             "QHadron_lineageV2FragmentationSourceCertain",
-             "QGenCharged_packedGenIdx"]
+             "QHadron_lineageV2FragmentationSourceCertain"] + qgen_names
     indexed = {}
     with uproot.open(filename) as root_file:
         tree = root_file[tree_name]
+        table_names = [name for name in tree.keys() if name.startswith("QFrag_") or name.startswith("QHadron_")]
+        names += [name for name in table_names if name not in names]
         missing = sorted(set(names) - set(tree.keys()))
         if missing:
             raise SystemExit("reference %s is missing required branches: %s" % (filename, ", ".join(missing)))
@@ -47,6 +57,8 @@ def load_reference(filename, tree_name):
 
 def read_fwlite_chains(filename, requests, max_depth=12):
     """Resolve stored pruned indices to mother links using matching MiniAOD (CMSSW FWLite)."""
+    if not requests:
+        return {}
     try:
         import ROOT
         from DataFormats.FWLite import Events, Handle
@@ -100,7 +112,9 @@ def read_fwlite_chains(filename, requests, max_depth=12):
                         mothers.append({"index": mother_index, "pdgId": int(mother.pdgId())})
                         if depth < max_depth:
                             queue.append((mother_index, depth + 1))
+                flags = particle.statusFlags()
                 rows.append({"index": idx, "pdgId": int(particle.pdgId()), "status": int(particle.status()),
+                             "isHardProcess": bool(flags.isHardProcess()), "fromHardProcess": bool(flags.fromHardProcess()),
                              "depth": depth, "isSelectedQFragRepresentative": idx == request.get("qfragPrunedIdx", -1),
                              "mothers": mothers})
             results[request["requestId"]] = json.dumps(rows, separators=(",", ":"))
@@ -116,6 +130,75 @@ def particle_kind(pdg_id):
 
 def bin_count(value):
     return "3plus" if value >= 3 else str(value)
+
+
+def diagnose_chain_frontier(chain_text, start_index, qfrag_pruned_indices=()):
+    """Summarize first-quark lineages in a serialized retained mother graph."""
+    try:
+        rows = json.loads(chain_text)
+    except (TypeError, ValueError):
+        return "CHAIN_UNAVAILABLE"
+    by_index = {int(row["index"]): row for row in rows}
+    parent = {idx: idx for idx, row in by_index.items() if 0 < abs(int(row["pdgId"])) <= 5}
+
+    def find(idx):
+        while parent[idx] != idx:
+            parent[idx] = parent[parent[idx]]
+            idx = parent[idx]
+        return idx
+
+    for idx, row in by_index.items():
+        if idx not in parent:
+            continue
+        for mother in row["mothers"]:
+            mid = mother.get("index")
+            if mid in parent and int(by_index[mid]["pdgId"]) == int(row["pdgId"]):
+                a, b = find(idx), find(mid)
+                if a != b:
+                    parent[b] = a
+
+    frontier_indices, pending, visited = set(), [int(start_index)], set()
+    unresolved_edges = 0
+    while pending:
+        idx = pending.pop()
+        if idx in visited:
+            continue
+        visited.add(idx)
+        row = by_index.get(idx)
+        if row is None:
+            unresolved_edges += 1
+            continue
+        if idx in parent:
+            frontier_indices.add(idx)
+            continue
+        for mother in row["mothers"]:
+            mid = mother.get("index")
+            if mid is None or mid not in by_index:
+                unresolved_edges += 1
+            else:
+                pending.append(int(mid))
+
+    frontier_roots = {find(idx) for idx in frontier_indices}
+    qfrag_rows_by_root = defaultdict(list)
+    for qrow, qidx in enumerate(qfrag_pruned_indices):
+        if int(qidx) in parent:
+            qfrag_rows_by_root[find(int(qidx))].append(qrow)
+    frontier_rows = [{"prunedIdx": idx, "lineageRootInGraph": find(idx),
+                      "qfragRowsInCopyLineage": qfrag_rows_by_root.get(find(idx), []),
+                      "pdgId": int(by_index[idx]["pdgId"]),
+                      "status": int(by_index[idx]["status"]),
+                      "isHardProcess": by_index[idx].get("isHardProcess", "unknown"),
+                      "isSelectedQFragRepresentative": by_index[idx].get("isSelectedQFragRepresentative", False)}
+                     for idx in sorted(frontier_indices)]
+    excluded = [{"prunedIdx": idx, "lineageRootInGraph": find(idx),
+                 "qfragRowsInCopyLineage": qfrag_rows_by_root.get(find(idx), []),
+                 "pdgId": int(row["pdgId"]), "status": int(row["status"]),
+                 "isHardProcess": row.get("isHardProcess", "unknown")}
+                for idx, row in sorted(by_index.items()) if idx in parent and find(idx) not in frontier_roots]
+    return json.dumps({"frontierQuarkCopies": frontier_rows,
+                       "frontierLineageCountInAvailableGraph": len(frontier_roots),
+                       "upstreamQuarksBeyondFrontier": excluded,
+                       "unresolvedOrDepthTruncatedMotherEdges": unresolved_edges}, separators=(",", ":"))
 
 
 def main():
@@ -140,6 +223,7 @@ def main():
         "QHadron_lineageV2OriginCategory", "QHadron_lineageV2FragmentationSourceCertain",
         "QGenCharged_packedGenIdx", "QGenCharged_pdgId", "QGenCharged_pt", "QGenCharged_eta",
         "QGenCharged_quarkIdx", "QGenCharged_hadronIdx", "QGenCharged_isHFDecay",
+        "QGenCharged_isDirectHFDecay",
         "QGenCharged_isFromB", "QGenCharged_isFromPromptD", "QGenCharged_isFromBtoD",
         "QGenCharged_membershipType", "QGenCharged_isAmbiguous", "QGenCharged_nCandidateQuarkSystems",
         "QGenCharged_lastPrunedIdx",
@@ -148,6 +232,7 @@ def main():
         "QGenCharged_v2QuarkIdx", "QGenCharged_v2AssociationQuality",
         "QGenCharged_v2AssociationReason", "QGenCharged_v2MembershipType",
         "QGenCharged_v2FragmentationSourceCertain", "QGenCharged_v2IsFromUnknownD",
+        "QGenCharged_v2NNearestHeavyHadrons",
         "QGenCharged_v2NNearestHeavyHadrons", "QGenCharged_v2NCandidateQuarkLineages",
         "QGenCharged_v2NCandidateQFragSystems", "QFrag_prunedGenIdx",
     ]
@@ -158,6 +243,10 @@ def main():
         summary, transitions, examples, acceptance_rows = Counter(), Counter(), [], []
         prompt_cross = Counter()
         prompt_system_rows, high_mult_rows, transition_breakdown, case_requests = [], [], Counter(), []
+        correction_quality_transitions, correction_membership_transitions = Counter(), Counter()
+        correction_flavours = Counter()
+        correction_cases = []
+        correction_invariants = Counter()
         request_counter = 0
         seen_current_events = set()
         reference = load_reference(args.reference[file_number], args.tree) if args.reference else None
@@ -166,9 +255,11 @@ def main():
             available = set(tree.keys())
             current_branches = list(branches)
             if reference is not None:
+                current_branches += [name for name in available if name.startswith("QFrag_") or name.startswith("QHadron_")]
                 current_branches += ["QFrag_prunedGenIdx", "QHadron_prunedGenIdx", "QHadron_lineageV2QuarkPdgId",
                                      "QHadron_lineageV2AssociationReason", "QHadron_lineageV2SourceCategory",
                                      "QHadron_lineageV2SourceReason"]
+            current_branches = list(dict.fromkeys(current_branches))
             missing = sorted(set(current_branches) - available)
             if missing:
                 raise SystemExit("%s is missing required branches: %s" % (path, ", ".join(missing)))
@@ -229,6 +320,28 @@ def main():
                                 examples.append({"file": str(path), "run": event_key[0], "luminosityBlock": event_key[1],
                                                  "event": event_key[2], "packedGenIdx": "", "issue": mismatch})
                         summary["reference_events_compared"] += baseline is not None
+                        if baseline is not None:
+                            for column in current_branches:
+                                if (column.startswith("QFrag_") or column.startswith("QHadron_")) and get(column) != baseline[column]:
+                                    correction_invariants[column + " changed"] += 1
+                            old_packed = baseline["QGenCharged_packedGenIdx"]
+                            if len(old_packed) != len(packed) or set(old_packed) != set(packed):
+                                correction_invariants["QGenCharged selected particle set/order changed"] += 1
+                            else:
+                                old_pos = {packed_idx: i for i, packed_idx in enumerate(old_packed)}
+                                invariant_columns = [
+                                    "QGenCharged_hadronIdx", "QGenCharged_isHFDecay", "QGenCharged_isFromB",
+                                    "QGenCharged_isDirectHFDecay", "QGenCharged_v2NNearestHeavyHadrons",
+                                    "QGenCharged_isFromPromptD", "QGenCharged_isFromBtoD", "QGenCharged_membershipType",
+                                    "QGenCharged_v2HadronIdx", "QGenCharged_v2NearestHeavyPrunedIdx",
+                                    "QGenCharged_v2HadronAssociationQuality", "QGenCharged_v2HadronAssociationReason",
+                                    "QGenCharged_v2FragmentationSourceCertain", "QGenCharged_v2IsFromUnknownD",
+                                ]
+                                for column in invariant_columns:
+                                    current = get(column)
+                                    old = baseline[column]
+                                    if any(current[i] != old[old_pos[packed_idx]] for i, packed_idx in enumerate(packed)):
+                                        correction_invariants[column] += 1
                     qidx_old = get("QGenCharged_quarkIdx")
                     old_amb = get("QGenCharged_isAmbiguous")
                     old_hf = get("QGenCharged_isHFDecay")
@@ -249,6 +362,12 @@ def main():
                     from_prompt_d = get("QGenCharged_isFromPromptD")
                     from_btod = get("QGenCharged_isFromBtoD")
                     from_unknown_d = get("QGenCharged_v2IsFromUnknownD")
+                    old_rows_by_packed = {}
+                    if reference is not None and baseline is not None:
+                        old_rows_by_packed = {packed_idx: i for i, packed_idx in enumerate(baseline["QGenCharged_packedGenIdx"])}
+                    old_extra_by_q = Counter()
+                    old_certain_extra_by_q = Counter()
+                    old_daughters_by_hadron = Counter()
                     for hrow, (quark, quality) in enumerate(zip(hq, hquality)):
                         if quark < -1 or quark >= len(qflav):
                             raise AssertionError("QHadron V2 QFrag index out of bounds in event %s, row %d" % (get("event"), hrow))
@@ -266,6 +385,57 @@ def main():
                             prompt_qsystems.add(quark)
                             prompt_d_rows.add(hrow)
                     for row, packed_idx in enumerate(packed):
+                        if packed_idx in old_rows_by_packed:
+                            old_row = old_rows_by_packed[packed_idx]
+                            old_quality_v2 = int(baseline["QGenCharged_v2AssociationQuality"][old_row])
+                            old_membership_v2 = int(baseline["QGenCharged_v2MembershipType"][old_row])
+                            old_hadron_quality = int(baseline["QGenCharged_v2HadronAssociationQuality"][old_row])
+                            old_hadron_idx = int(baseline["QGenCharged_v2HadronIdx"][old_row])
+                            old_nearest_idx = int(baseline["QGenCharged_v2NearestHeavyPrunedIdx"][old_row])
+                            old_qidx_v2 = int(baseline["QGenCharged_v2QuarkIdx"][old_row])
+                            old_lineage_count = int(baseline["QGenCharged_v2NCandidateQuarkLineages"][old_row])
+                            correction_quality_transitions[("all", old_quality_v2, int(v2quality[row]))] += 1
+                            old_is_additional = old_hadron_quality == 0 and old_hadron_idx < 0 and old_nearest_idx < 0
+                            current_is_additional = v2hq[row] == 0 and v2h[row] < 0 and v2nearest[row] < 0
+                            if pt[row] >= 0.4 and abs(eta[row]) <= 2.5:
+                                if old_membership_v2 == 2 and old_quality_v2 == 1 and old_qidx_v2 in prompt_qsystems:
+                                    old_extra_by_q[old_qidx_v2] += 1
+                                    if baseline["QGenCharged_v2FragmentationSourceCertain"][old_row]:
+                                        old_certain_extra_by_q[old_qidx_v2] += 1
+                                old_hadron = int(baseline["QGenCharged_v2HadronIdx"][old_row])
+                                if old_membership_v2 == 1 and old_hadron in prompt_d_rows:
+                                    old_daughters_by_hadron[old_hadron] += 1
+                            if old_is_additional and current_is_additional:
+                                correction_quality_transitions[("additional", old_quality_v2, int(v2quality[row]))] += 1
+                                correction_membership_transitions[(old_membership_v2, int(v2mem[row]))] += 1
+                                if old_lineage_count > 1 and int(get("QGenCharged_v2NCandidateQuarkLineages")[row]) > 1:
+                                    summary["remaining_additional_multiple_frontier_lineages"] += 1
+                                if old_quality_v2 == 2 and v2quality[row] == 1 and v2q[row] >= 0:
+                                    flavour = int(qpdg[v2q[row]])
+                                    correction_flavours[(flavour, abs(flavour))] += 1
+                                    summary["additional_ambiguous_to_unique"] += 1
+                                    kind = "recovered_ambiguous_to_unique"
+                                elif int(get("QGenCharged_v2NCandidateQuarkLineages")[row]) > 1:
+                                    summary["additional_remaining_multiple_frontier_lineages"] += 1
+                                    kind = "remaining_multiple_frontier_lineages"
+                                else:
+                                    kind = None
+                                if kind and sum(item["kind"] == kind for item in correction_cases) < args.max_examples:
+                                    request_counter += 1
+                                    target_q = int(v2q[row]) if v2q[row] >= 0 else old_qidx_v2
+                                    correction_cases.append({"requestId": request_counter, "kind": kind,
+                                                             "run": event_key[0], "luminosityBlock": event_key[1], "event": event_key[2],
+                                                             "packedGenIdx": int(packed_idx), "lastPrunedIdx": int(last_pruned[row]),
+                                                             "pdgId": int(particle_pdg[row]), "pt": float(pt[row]), "eta": float(eta[row]),
+                                                             "preQuality": old_quality_v2, "postQuality": int(v2quality[row]),
+                                                             "preMembership": old_membership_v2, "postMembership": int(v2mem[row]),
+                                                             "preCandidateLineages": old_lineage_count,
+                                                             "postCandidateLineages": int(get("QGenCharged_v2NCandidateQuarkLineages")[row]),
+                                                             "postCandidateQFragSystems": int(get("QGenCharged_v2NCandidateQFragSystems")[row]),
+                                                             "qfragIdx": target_q,
+                                                             "qfragPrunedIdx": int(qpruned[target_q]) if 0 <= target_q < len(qpruned) else -1,
+                                                             "qfragPrunedIndices": [int(x) for x in qpruned],
+                                                             "requestNote": "retained mother graph; frontier candidates are distinct copy lineages"})
                         old_class = "unique" if qidx_old[row] >= 0 and not old_amb[row] else ("ambiguous" if old_amb[row] else "unresolved")
                         new_class = {1: "unique", 2: "ambiguous", 3: "unresolved", 0: "missing"}.get(v2quality[row], "unresolved")
                         transitions[(old_class, new_class)] += 1
@@ -376,6 +546,8 @@ def main():
                             if hrow in prompt_d_rows:
                                 accepted_daughters_by_hadron[hrow] += 1
                                 accepted_daughters_by_q[hq[hrow]] += 1
+                        if v2mem[row] == 2 and v2certain[row]:
+                            correction_invariants["additional fragmentation source certainty became nonzero"] += 1
                     unique_system_bins = Counter()
                     certain_system_bins = Counter()
                     d_bins = Counter()
@@ -393,14 +565,22 @@ def main():
                     for quark in sorted(prompt_qsystems):
                         drows = [hrow for hrow in prompt_d_rows if hq[hrow] == quark]
                         dcount = accepted_daughters_by_q[quark]
+                        old_dcount = sum(old_daughters_by_hadron[hrow] for hrow in drows)
                         unique_count = accepted_unique_extra_by_q[quark]
                         certain_count = accepted_certain_extra_by_q[quark]
-                        prompt_cross[("uniquely_associated", bin_count(dcount), bin_count(unique_count))] += 1
-                        prompt_cross[("source_certain_subset", bin_count(dcount), bin_count(certain_count))] += 1
+                        old_unique_count = old_extra_by_q[quark]
+                        old_certain_count = old_certain_extra_by_q[quark]
+                        prompt_cross[("before_unique", bin_count(old_dcount), bin_count(old_unique_count))] += 1
+                        prompt_cross[("after_unique", bin_count(dcount), bin_count(unique_count))] += 1
+                        prompt_cross[("before_source_certain_subset", bin_count(old_dcount), bin_count(old_certain_count))] += 1
+                        prompt_cross[("after_source_certain_subset", bin_count(dcount), bin_count(certain_count))] += 1
                         system_row = {"file": str(path), "run": event_key[0], "luminosityBlock": event_key[1],
                                       "event": event_key[2], "qfragIdx": quark, "quarkPdgId": qpdg[quark],
-                                      "promptDHadronCount": len(drows), "acceptedDDecayTracks": dcount,
+                                      "promptDHadronCount": len(drows), "acceptedDDecayTracksBefore": old_dcount,
+                                      "acceptedDDecayTracks": dcount,
+                                      "additionalUniqueCandidatesBefore": old_unique_count,
                                       "additionalUniqueCandidates": unique_count,
+                                      "additionalSourceCertainBefore": old_certain_count,
                                       "additionalUniqueSourceUncertain": unique_count - certain_count,
                                       "additionalSourceCertain": certain_count,
                                       "candidateLineageInterpretation": "association ancestry only; source certainty is separate"}
@@ -425,9 +605,13 @@ def main():
                                                       "requestNote": "qfragIdx=%d; system has %d accepted unique candidates" % (quark, unique_count)})
                         acceptance_rows.append({"file": str(path), "run": event_key[0], "luminosityBlock": event_key[1],
                                                 "event": event_key[2], "qfragIdx": quark,
+                                                "additionalAcceptedChargedUniqueBefore": old_unique_count,
                                                 "additionalAcceptedChargedUnique": accepted_unique_extra_by_q[quark],
+                                                "additionalAcceptedChargedSourceCertainBefore": old_certain_count,
                                                 "additionalAcceptedChargedSourceCertain": accepted_certain_extra_by_q[quark],
                                                 "additionalAcceptedChargedUniqueSourceUncertain": accepted_unique_extra_by_q[quark] - accepted_certain_extra_by_q[quark],
+                                                "acceptedDDecayTracksBefore": old_dcount,
+                                                "acceptedDDecayTracks": dcount,
                                                 "promptDCount": len(drows),
                                                 "promptDObjectsWithExactlyTwoAcceptedChargedDaughters": sum(accepted_daughters_by_hadron[hrow] == 2 for hrow in drows),
                                                 "sourceCertaintyNote": "unique count includes uncertain candidates; source-certain is the nested subset"})
@@ -438,6 +622,8 @@ def main():
                 for run, lumi, event in sorted(missing_current)[:max(0, args.max_examples - len(examples))]:
                     examples.append({"file": str(path), "run": run, "luminosityBlock": lumi, "event": event,
                                      "packedGenIdx": "", "issue": "reference event missing from updated output"})
+        summary["correction_invariant_failures"] += sum(correction_invariants.values())
+        summary["invariant_failures"] += sum(correction_invariants.values())
         prefix = args.output_dir / stem
         write_csv(prefix.with_name(prefix.name + "_summary.csv"),
                   [{"metric": key, "value": value} for key, value in sorted(summary.items())], ["metric", "value"])
@@ -447,33 +633,40 @@ def main():
         write_csv(prefix.with_name(prefix.name + "_problematic.csv"), examples,
                   ["file", "run", "luminosityBlock", "event", "packedGenIdx", "issue", "old_quarkIdx", "new_quarkIdx", "new_hadronIdx", "hadronQuality", "membership", "associationQuality", "associationReason"])
         write_csv(prefix.with_name(prefix.name + "_prompt_charm_acceptance.csv"), acceptance_rows,
-                  ["file", "run", "luminosityBlock", "event", "qfragIdx", "additionalAcceptedChargedUnique",
-                   "additionalAcceptedChargedSourceCertain", "additionalAcceptedChargedUniqueSourceUncertain", "promptDCount",
+                  ["file", "run", "luminosityBlock", "event", "qfragIdx", "additionalAcceptedChargedUniqueBefore",
+                   "additionalAcceptedChargedUnique", "additionalAcceptedChargedSourceCertainBefore",
+                   "additionalAcceptedChargedSourceCertain", "additionalAcceptedChargedUniqueSourceUncertain",
+                   "acceptedDDecayTracksBefore", "acceptedDDecayTracks", "promptDCount",
                    "promptDObjectsWithExactlyTwoAcceptedChargedDaughters", "sourceCertaintyNote"])
         cross_rows = [{"candidate_basis": basis, "accepted_D_decay_tracks": d_bin,
                        "accepted_additional_candidates": a_bin, "prompt_charm_systems": count}
                       for (basis, d_bin, a_bin), count in sorted(prompt_cross.items())]
-        exact_two = [row for row in prompt_system_rows if row["acceptedDDecayTracks"] == 2]
-        denominator = len(exact_two)
-        unique_numerator = sum(row["additionalUniqueCandidates"] > 0 for row in exact_two)
-        certain_numerator = sum(row["additionalSourceCertain"] > 0 for row in exact_two)
-        cross_rows.extend([
-            {"candidate_basis": "fraction_exactly_2_D_tracks_with_ge1_additional", "accepted_D_decay_tracks": "2",
-             "accepted_additional_candidates": "ge1", "prompt_charm_systems": denominator,
-             "numerator": unique_numerator, "fraction": unique_numerator / denominator if denominator else ""},
-            {"candidate_basis": "fraction_exactly_2_D_tracks_with_ge1_source_certain", "accepted_D_decay_tracks": "2",
-             "accepted_additional_candidates": "ge1", "prompt_charm_systems": denominator,
-             "numerator": certain_numerator, "fraction": certain_numerator / denominator if denominator else ""},
-        ])
+        for phase, d_field, unique_field, certain_field in [
+                ("before", "acceptedDDecayTracksBefore", "additionalUniqueCandidatesBefore", "additionalSourceCertainBefore"),
+                ("after", "acceptedDDecayTracks", "additionalUniqueCandidates", "additionalSourceCertain")]:
+            exact_two = [row for row in prompt_system_rows if row[d_field] == 2]
+            denominator = len(exact_two)
+            unique_numerator = sum(row[unique_field] > 0 for row in exact_two)
+            certain_numerator = sum(row[certain_field] > 0 for row in exact_two)
+            cross_rows.extend([
+                {"candidate_basis": phase + "_fraction_exactly_2_D_tracks_with_ge1_additional", "accepted_D_decay_tracks": "2",
+                 "accepted_additional_candidates": "ge1", "prompt_charm_systems": denominator,
+                 "numerator": unique_numerator, "fraction": unique_numerator / denominator if denominator else ""},
+                {"candidate_basis": phase + "_fraction_exactly_2_D_tracks_with_ge1_source_certain", "accepted_D_decay_tracks": "2",
+                 "accepted_additional_candidates": "ge1", "prompt_charm_systems": denominator,
+                 "numerator": certain_numerator, "fraction": certain_numerator / denominator if denominator else ""},
+            ])
         write_csv(prefix.with_name(prefix.name + "_prompt_charm_cross_tab.csv"), cross_rows,
                   ["candidate_basis", "accepted_D_decay_tracks", "accepted_additional_candidates", "prompt_charm_systems", "numerator", "fraction"])
         write_csv(prefix.with_name(prefix.name + "_prompt_charm_systems.csv"), prompt_system_rows,
                   ["file", "run", "luminosityBlock", "event", "qfragIdx", "quarkPdgId", "promptDHadronCount",
-                   "acceptedDDecayTracks", "additionalUniqueCandidates", "additionalUniqueSourceUncertain",
+                   "acceptedDDecayTracksBefore", "acceptedDDecayTracks", "additionalUniqueCandidatesBefore",
+                   "additionalUniqueCandidates", "additionalSourceCertainBefore", "additionalUniqueSourceUncertain",
                    "additionalSourceCertain", "candidateLineageInterpretation"])
         write_csv(prefix.with_name(prefix.name + "_high_multiplicity_prompt_charm.csv"), high_mult_rows,
                   ["file", "run", "luminosityBlock", "event", "qfragIdx", "quarkPdgId", "promptDHadronCount",
-                   "acceptedDDecayTracks", "additionalUniqueCandidates", "additionalUniqueSourceUncertain",
+                   "acceptedDDecayTracksBefore", "acceptedDDecayTracks", "additionalUniqueCandidatesBefore",
+                   "additionalUniqueCandidates", "additionalSourceCertainBefore", "additionalUniqueSourceUncertain",
                    "additionalSourceCertain", "candidateLineageInterpretation"])
         transition_rows = [{"particle_type": kind, "pdgId": pdg, "old_membership": old_mem, "v2_membership": new_mem,
                             "old_quark_pdgId": flavour, "v2_ambiguity_reason": reason,
@@ -483,13 +676,36 @@ def main():
         write_csv(prefix.with_name(prefix.name + "_old_unique_to_v2_ambiguous.csv"), transition_rows,
                   ["particle_type", "pdgId", "old_membership", "v2_membership", "old_quark_pdgId",
                    "v2_ambiguity_reason", "candidate_lineages", "candidate_qfrag_systems", "count"])
-        chains = read_fwlite_chains(args.miniAOD[file_number], case_requests) if args.miniAOD else {}
-        for request in case_requests:
+        write_csv(prefix.with_name(prefix.name + "_correction_quality_transitions.csv"),
+                  [{"scope": scope, "pre_quality": before, "post_quality": after, "count": count}
+                   for (scope, before, after), count in sorted(correction_quality_transitions.items())],
+                  ["scope", "pre_quality", "post_quality", "count"])
+        write_csv(prefix.with_name(prefix.name + "_correction_membership_transitions.csv"),
+                  [{"pre_membership": before, "post_membership": after, "count": count}
+                   for (before, after), count in sorted(correction_membership_transitions.items())],
+                  ["pre_membership", "post_membership", "count"])
+        write_csv(prefix.with_name(prefix.name + "_correction_recovered_flavours.csv"),
+                  [{"signed_quark_pdgId": pdg, "absolute_flavour": flavour, "recovered_associations": count}
+                   for (pdg, flavour), count in sorted(correction_flavours.items())],
+                  ["signed_quark_pdgId", "absolute_flavour", "recovered_associations"])
+        write_csv(prefix.with_name(prefix.name + "_correction_invariants.csv"),
+                  [{"invariant": key, "failures": value} for key, value in sorted(correction_invariants.items())],
+                  ["invariant", "failures"])
+        all_chain_requests = case_requests + correction_cases
+        chains = read_fwlite_chains(args.miniAOD[file_number], all_chain_requests, max_depth=64) if args.miniAOD else {}
+        for request in all_chain_requests:
             request["motherChain"] = chains.get(request["requestId"], "NOT_REQUESTED; pass matching --miniAOD for generator mother links")
+            request["frontierDiagnostic"] = diagnose_chain_frontier(
+                request["motherChain"], request["lastPrunedIdx"], request.get("qfragPrunedIndices", ()))
         write_csv(prefix.with_name(prefix.name + "_representative_cases.csv"), case_requests,
                   ["kind", "run", "luminosityBlock", "event", "packedGenIdx", "lastPrunedIdx", "pdgId", "pt", "eta",
                    "oldQuarkIdx", "oldQuarkPdgId", "qfragIdx", "qfragPrunedIdx", "oldMembership", "v2Membership", "v2AssociationReason",
                    "candidateLineages", "candidateQFragSystems", "requestNote", "motherChain"])
+        write_csv(prefix.with_name(prefix.name + "_ancestry_boundary_cases.csv"), correction_cases,
+                  ["kind", "run", "luminosityBlock", "event", "packedGenIdx", "lastPrunedIdx", "pdgId", "pt", "eta",
+                   "preQuality", "postQuality", "preMembership", "postMembership", "preCandidateLineages",
+                   "postCandidateLineages", "postCandidateQFragSystems", "qfragIdx", "qfragPrunedIdx",
+                   "requestNote", "motherChain", "frontierDiagnostic"])
         # Unique ancestry acceptance and the stricter source-certain subset are
         # reported independently to expose the effect of the certainty policy.
         if summary["invariant_failures"]:
@@ -499,7 +715,9 @@ def main():
         if reference is None:
             print("  Pass --reference with the same events from the pre-update producer to verify selections and unchanged V2 hadron truth.")
         else:
-            print("  Compared QFrag, QHadron, QGenCharged selection/order and QHadron V2 truth by event identity.")
+            print("  Compared QFrag/QHadron truth, charged heavy-hadron assignments, and source-certainty fields to the reference.")
+        print("  Additional charged ambiguous-to-unique transitions: %d; remaining multi-frontier cases: %d" %
+              (summary["additional_ambiguous_to_unique"], summary["additional_remaining_multiple_frontier_lineages"]))
         print("  Prompt-charm additional accepted: unique=%d, source-certain=%d, unique/source-uncertain=%d" %
               (summary["prompt_charm_additional_accepted_unique"],
                summary["prompt_charm_additional_accepted_source_certain"],

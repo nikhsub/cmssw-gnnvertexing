@@ -281,6 +281,65 @@ Ancestors QuarkFragmentationProducer::ancestors(
   return result;
 }
 
+namespace {
+  struct QuarkFrontier {
+    std::unordered_set<int> lineages;
+    std::unordered_set<int> qfragSystems;
+    bool incomplete = false;
+  };
+
+  // For additional charged particles, stop each retained mother branch at its
+  // first quark-copy lineage. This removes upstream production quarks reached
+  // only by continuing through an already encountered outgoing quark, while
+  // retaining distinct quark co-mothers on separate branches.
+  QuarkFrontier firstQuarkFrontier(
+      int start,
+      const reco::GenParticleCollection& particles,
+      const std::unordered_map<const reco::Candidate*, int>& prunedIndex,
+      const std::unordered_map<int, int>& prunedToLineage,
+      const std::unordered_map<int, int>& prunedToQFrag) {
+    QuarkFrontier result;
+    if (start < 0 || static_cast<size_t>(start) >= particles.size()) {
+      result.incomplete = true;
+      return result;
+    }
+    std::queue<int> todo;
+    std::unordered_set<int> seen;
+    todo.push(start);
+    seen.insert(start);
+    while (!todo.empty()) {
+      const int current = todo.front();
+      todo.pop();
+      const auto& particle = particles[current];
+      if (isQuark(particle.pdgId())) {
+        const auto lineage = prunedToLineage.find(current);
+        if (lineage == prunedToLineage.end()) {
+          result.incomplete = true;
+        } else {
+          result.lineages.insert(lineage->second);
+          const auto qfrag = prunedToQFrag.find(current);
+          if (qfrag != prunedToQFrag.end()) result.qfragSystems.insert(qfrag->second);
+        }
+        continue;
+      }
+      for (size_t im = 0; im < particle.numberOfMothers(); ++im) {
+        const reco::Candidate* mother = particle.mother(im);
+        if (!mother) {
+          result.incomplete = true;
+          continue;
+        }
+        const auto found = prunedIndex.find(mother);
+        if (found == prunedIndex.end()) {
+          result.incomplete = true;
+          continue;
+        }
+        if (seen.insert(found->second).second) todo.push(found->second);
+      }
+    }
+    return result;
+  }
+}  // namespace
+
 void QuarkFragmentationProducer::logAncestry(
     const edm::Event& event, int hadronRow, int hadronIndex,
     const reco::GenParticleCollection& particles,
@@ -1000,14 +1059,24 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
     int v2Quark = -1, v2AssociationQuality = kMissing, v2AssociationReason = 3;
     int v2Membership = kUnassigned, v2SourceIsCertain = 0;
     std::unordered_set<int> candidateLineages, candidateV2Systems;
-    std::unordered_set<int> ancestryQuarks(ancestry.indices.begin(), ancestry.indices.end());
-    if (last >= 0 && isQuark((*pruned)[last].pdgId())) ancestryQuarks.insert(last);
-    for (const int ancestor : ancestryQuarks) {
-      const auto lineage = prunedToLineage.find(ancestor);
-      if (lineage == prunedToLineage.end()) continue;
-      candidateLineages.insert(lineage->second);
-      const auto row = prunedToQFrag.find(ancestor);
-      if (row != prunedToQFrag.end()) candidateV2Systems.insert(row->second);
+    bool candidateAncestryIncomplete = ancestry.incomplete || ancestry.truncated;
+    if (nearestHeavyPruned.empty()) {
+      const QuarkFrontier frontier = firstQuarkFrontier(last, *pruned, prunedIndex, prunedToLineage, prunedToQFrag);
+      candidateLineages = frontier.lineages;
+      candidateV2Systems = frontier.qfragSystems;
+      candidateAncestryIncomplete = candidateAncestryIncomplete || frontier.incomplete;
+    } else {
+      // Preserve the existing ancestry diagnostics for heavy-hadron decay rows;
+      // only generic additional charged-particle association uses the frontier.
+      std::unordered_set<int> ancestryQuarks(ancestry.indices.begin(), ancestry.indices.end());
+      if (last >= 0 && isQuark((*pruned)[last].pdgId())) ancestryQuarks.insert(last);
+      for (const int ancestor : ancestryQuarks) {
+        const auto lineage = prunedToLineage.find(ancestor);
+        if (lineage == prunedToLineage.end()) continue;
+        candidateLineages.insert(lineage->second);
+        const auto row = prunedToQFrag.find(ancestor);
+        if (row != prunedToQFrag.end()) candidateV2Systems.insert(row->second);
+      }
     }
     if (v2Hadron >= 0 && nearestHeavyPruned.size() == 1) {
       v2Membership = kHeavyHadronDecay;
@@ -1030,7 +1099,7 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
         v2AssociationQuality = kAmbiguous;
         v2Membership = kAmbiguousMembership;
         v2AssociationReason = 2;
-      } else if (candidateV2Systems.size() == 1 && candidateLineages.size() == 1 && !ancestry.incomplete && !ancestry.truncated) {
+      } else if (candidateV2Systems.size() == 1 && candidateLineages.size() == 1 && !candidateAncestryIncomplete) {
         v2Quark = *candidateV2Systems.begin();
         v2AssociationQuality = kUnique;
         v2Membership = kRetainedFragmentation;
@@ -1038,7 +1107,7 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
         // A generic charged hadron's retained ancestry may include shared
         // string partners. It is never sufficient by itself to certify the
         // physical fragmentation source.
-      } else if (candidateLineages.size() == 1 || ancestry.incomplete || ancestry.truncated || last < 0) {
+      } else if (candidateLineages.size() == 1 || candidateAncestryIncomplete || last < 0) {
         v2AssociationQuality = kV2Unknown;
         v2AssociationReason = candidateLineages.size() == 1 ? 5 : 4;
       }
@@ -1160,8 +1229,8 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   cTable->addColumn<int>("v2FragmentationSourceCertain",cV2SourceCertain,"1 only inherited from a certain QHadron V2 source; generic charged fragmentation candidates are 0");
   cTable->addColumn<int>("v2IsFromUnknownD",cV2FromUnknownD,"retained ancestry includes selected D with unknown origin");
   cTable->addColumn<int>("v2NNearestHeavyHadrons",cV2NearestHeavyCount,"number of equally near retained physical B/D hadrons");
-  cTable->addColumn<int>("v2NCandidateQuarkLineages",cV2CandidateLineages,"distinct connected signed-PDG quark-copy groups in ancestry");
-  cTable->addColumn<int>("v2NCandidateQFragSystems",cV2CandidateSystems,"distinct selected QFrag rows in ancestry");
+  cTable->addColumn<int>("v2NCandidateQuarkLineages",cV2CandidateLineages,"distinct connected signed-PDG quark-copy groups considered by V2; first-quark frontier for additional charged particles");
+  cTable->addColumn<int>("v2NCandidateQFragSystems",cV2CandidateSystems,"distinct selected QFrag rows among V2 candidates; first-quark frontier for additional charged particles");
   event.put(std::move(qTable), "QFragTable"); event.put(std::move(hTable), "QHadronTable"); event.put(std::move(cTable), "QGenChargedTable");
 }
 
