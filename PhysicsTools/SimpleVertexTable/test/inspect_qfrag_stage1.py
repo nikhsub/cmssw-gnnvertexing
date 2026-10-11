@@ -1,45 +1,52 @@
 #!/usr/bin/env python3
+"""Summarize the compact Stage-1 QFrag, QHadron, and QGenCharged tables."""
 import argparse
+from collections import Counter
+
 import ROOT
 
-parser = argparse.ArgumentParser(description="Summarise Stage-1 QFrag NanoAOD FlatTables")
+parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("file")
 args = parser.parse_args()
+root_file = ROOT.TFile.Open(args.file)
+if not root_file or root_file.IsZombie():
+    raise SystemExit("Could not open ROOT file: " + args.file)
+events = root_file.Get("Events")
+if not events:
+    raise SystemExit("ROOT file has no Events tree")
 
-root = ROOT.TFile.Open(args.file)
-events = root.Get("Events")
-counters = {name: 0 for name in ("charm", "bottom", "light", "B", "D", "unique", "ambiguous", "missing", "prompt", "bToD", "unknown", "hfDecay", "fragmentation", "chargedAmbiguous", "unassigned", "lineageUnique", "lineageAmbiguous", "lineageMissing", "lineageUnknown", "lineagePrompt", "lineageBtoD", "lineageOriginUnknown")}
-old_new = {}
+counts = Counter()
 for event in events:
-    for value in event.QFrag_flavour:
-        if value == 4: counters["charm"] += 1
-        elif value == 5: counters["bottom"] += 1
-        elif 1 <= value <= 3: counters["light"] += 1
-    for value in event.QHadron_flavour:
-        if value == 5: counters["B"] += 1
-        elif value == 4: counters["D"] += 1
-    for value in event.QHadron_associationQuality:
-        counters[{0: "missing", 1: "unique", 2: "ambiguous"}.get(value, "missing")] += 1
-    for old, new in zip(event.QHadron_associationQuality, event.QHadron_lineageAssociationQuality):
-        old_new[(old, new)] = old_new.get((old, new), 0) + 1
-        counters[{0: "lineageMissing", 1: "lineageUnique", 2: "lineageAmbiguous", 3: "lineageUnknown"}.get(new, "lineageUnknown")] += 1
-    for flavour, origin in zip(event.QHadron_flavour, event.QHadron_charmOrigin):
+    counts["quarks"] += len(event.QFrag_pdgId)
+    for pdg in event.QFrag_pdgId:
+        flavour = abs(pdg)
         if flavour == 4:
-            counters[{1: "prompt", 2: "bToD", 3: "unknown"}.get(origin, "unknown")] += 1
-    for flavour, origin in zip(event.QHadron_flavour, event.QHadron_lineageOriginCategory):
-        if flavour == 4:
-            counters[{1: "lineagePrompt", 2: "lineageBtoD", 3: "lineageOriginUnknown"}.get(origin, "lineageOriginUnknown")] += 1
-    for value in event.QGenCharged_membershipType:
-        counters[{0: "unassigned", 1: "hfDecay", 2: "fragmentation", 3: "chargedAmbiguous"}.get(value, "unassigned")] += 1
+            counts["charm"] += 1
+        elif flavour == 5:
+            counts["bottom"] += 1
+        elif 1 <= flavour <= 3:
+            counts["light"] += 1
+    for pdg, origin, quality, quark in zip(event.QHadron_pdgId, event.QHadron_charmOrigin,
+                                           event.QHadron_associationQuality, event.QHadron_quarkIdx):
+        counts["B" if abs(pdg) in (511, 521, 531, 541, 5122, 5132, 5232, 5332, 5142, 5242, 5342, 5512, 5532, 5542, 5554) else "D"] += 1
+        counts["hadronOrigin_%d" % origin] += 1
+        counts["hadronQuality_%d" % quality] += 1
+        counts["hadronMapped"] += quark >= 0
+    for quality, membership in zip(event.QGenCharged_associationQuality, event.QGenCharged_membershipType):
+        counts["chargedQuality_%d" % quality] += 1
+        counts["membership_%d" % membership] += 1
+    counts["charged"] += len(event.QGenCharged_pdgId)
 
-print("QFrag systems: charm=%d bottom=%d light=%d" % (counters["charm"], counters["bottom"], counters["light"]))
-print("QHadron: B=%d D=%d" % (counters["B"], counters["D"]))
-print("QHadron quark association: unique=%d ambiguous=%d missing=%d" % (counters["unique"], counters["ambiguous"], counters["missing"]))
-print("QHadron alternative lineage: unique=%d ambiguous=%d missing=%d unknown=%d" % (counters["lineageUnique"], counters["lineageAmbiguous"], counters["lineageMissing"], counters["lineageUnknown"]))
-print("Old/new association quality counts (old,new): %s" % sorted(old_new.items()))
-denom = counters["D"]
-print("D origin (D hadrons only): prompt=%d B-to-D=%d unknown=%d" % (counters["prompt"], counters["bToD"], counters["unknown"]))
-print("Alternative D lineage origin: prompt=%d B-to-D=%d unknown=%d" % (counters["lineagePrompt"], counters["lineageBtoD"], counters["lineageOriginUnknown"]))
-if denom:
-    print("D-origin fractions: prompt=%.4f B-to-D=%.4f unknown=%.4f" % (counters["prompt"]/denom, counters["bToD"]/denom, counters["unknown"]/denom))
-print("QGenCharged: HF-decay=%d retained-fragmentation=%d ambiguous=%d unassigned=%d" % (counters["hfDecay"], counters["fragmentation"], counters["chargedAmbiguous"], counters["unassigned"]))
+print("QFrag: charm=%d bottom=%d light=%d total=%d" %
+      (counts["charm"], counts["bottom"], counts["light"], counts["quarks"]))
+print("QHadron: B=%d D=%d mapped=%d" % (counts["B"], counts["D"], counts["hadronMapped"]))
+print("QHadron charm origin enum: 0=n/a 1=prompt 2=B-to-D 3=unknown; counts=" +
+      str({key[len("hadronOrigin_"):]: value for key, value in counts.items() if key.startswith("hadronOrigin_")}))
+print("QHadron association quality enum: 0=missing 1=unique 2=ambiguous 3=unknown; counts=" +
+      str({key[len("hadronQuality_"):]: value for key, value in counts.items() if key.startswith("hadronQuality_")}))
+print("QGenCharged: total=%d" % counts["charged"])
+print("QGenCharged membership enum: 0=unassigned 1=heavy-hadron decay 2=additional candidate 3=ambiguous; counts=" +
+      str({key[len("membership_"):]: value for key, value in counts.items() if key.startswith("membership_")}))
+print("QGenCharged association quality enum: 0=missing 1=unique 2=ambiguous 3=unknown; counts=" +
+      str({key[len("chargedQuality_"):]: value for key, value in counts.items() if key.startswith("chargedQuality_")}))
+root_file.Close()
