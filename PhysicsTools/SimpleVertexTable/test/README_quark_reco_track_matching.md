@@ -90,6 +90,21 @@ python3 PhysicsTools/SimpleVertexTable/test/validate_quark_reco_track_matching.p
   --input ttbarhad_stage2.root --sample ttbarhad --output-prefix ttbarhad_stage2
 ```
 
+For a faster diagnostic pass, limit validation to the first 100 events in the
+ROOT file:
+
+```bash
+python3 PhysicsTools/SimpleVertexTable/test/validate_quark_reco_track_matching.py \
+  --input HWWc_stage2.root --sample HWWc --output-prefix HWWc_stage2_first100 \
+  --max-events 100
+```
+
+`--max-events` limits ROOT reading as well as processing. It selects a
+deterministic prefix, not a random subset. The summary CSV records the file's
+total entries, the requested limit, and the number actually processed; the
+historical 1,000-event baseline counts should only be compared with a full,
+matching sample.
+
 The validator checks event-local references, one-to-one uniqueness, status and
 sentinel consistency, candidate counts, and saved residuals. Its reference
 Stage 1 generator-only counts are 66/239 for HWWc and 99/227 for ttbarhad;

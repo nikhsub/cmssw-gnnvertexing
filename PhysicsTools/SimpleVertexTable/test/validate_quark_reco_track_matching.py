@@ -109,12 +109,16 @@ def main():
     parser.add_argument("--maxDeltaR", type=float, default=0.03, help="matching cone used by the producer")
     parser.add_argument("--maxRelPt", type=float, default=0.5, help="relative-pT threshold used by the producer")
     parser.add_argument("--max-examples", type=int, default=100, help="maximum representative cases per case type")
+    parser.add_argument("--max-events", type=int, default=None,
+                        help="process only the first N Events entries (also limits ROOT reading); default: all events")
     args = parser.parse_args()
-    if args.maxDeltaR <= 0 or args.maxRelPt <= 0 or args.max_examples < 0:
-        parser.error("thresholds must be positive and max-examples nonnegative")
+    if args.maxDeltaR <= 0 or args.maxRelPt <= 0 or args.max_examples < 0 or (args.max_events is not None and args.max_events <= 0):
+        parser.error("thresholds must be positive, max-examples nonnegative, and max-events positive when specified")
 
     with uproot.open(args.input) as root_file:
         tree = root_file["Events"]
+        input_events = tree.num_entries
+        events_to_process = input_events if args.max_events is None else min(input_events, args.max_events)
         required = list(EVENT_KEYS)
         for prefix, fields in (("QRecoTrack", RECO_FIELDS), ("QGenCharged", GEN_FIELDS),
                                ("QHadron", HADRON_FIELDS), ("QFrag", QUARK_FIELDS)):
@@ -122,7 +126,7 @@ def main():
         missing = [name for name in required if name not in tree.keys()]
         if missing:
             raise ValueError("missing Events branches: " + ", ".join(missing))
-        arrays = tree.arrays(required, library="ak", how=dict)
+        arrays = tree.arrays(required, entry_stop=events_to_process, library="ak", how=dict)
 
     summary = []
     systems = []
@@ -131,6 +135,9 @@ def main():
     residual_dr = []
     residual_relpt = []
     total = Counter()
+    total["input_events_in_file"] = input_events
+    total["event_limit_requested"] = args.max_events if args.max_events is not None else -1
+    total["events_processed"] = events_to_process
     heavy = defaultdict(Counter)
     heavy_bins = defaultdict(Counter)
     candidate_groups = defaultdict(Counter)
@@ -462,6 +469,9 @@ def main():
         csv_write(path, ["low", "high", "count"], rows)
     write_hist(prefix + "_match_dr_hist.csv", residual_dr, args.maxDeltaR, 30)
     write_hist(prefix + "_match_relpt_hist.csv", residual_relpt, args.maxRelPt, 20)
+    print("Processed %d of %d Events entries%s" % (
+        events_to_process, input_events,
+        " (first-entry prefix limited by --max-events)" if events_to_process < input_events else ""))
     print("Wrote %s_{summary,prompt_charm_systems,prompt_d_hadrons,representative_cases,match_dr_hist,match_relpt_hist}.csv" % prefix)
     for row in summary:
         if row[0] in ("overall", "two_track_prompt_D"):
