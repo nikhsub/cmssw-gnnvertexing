@@ -2,7 +2,7 @@ import FWCore.ParameterSet.Config as cms
 from FWCore.ParameterSet.VarParsing import VarParsing
 
 options = VarParsing("analysis")
-options.register("outfile", "qfrag_track_stage2.root", VarParsing.multiplicity.singleton,
+options.register("outfile", "qfrag_association_gnn.root", VarParsing.multiplicity.singleton,
                  VarParsing.varType.string, "Output NanoAOD ROOT file")
 options.register("maxEvents", 100, VarParsing.multiplicity.singleton,
                  VarParsing.varType.int, "Maximum events")
@@ -30,6 +30,12 @@ process.out = cms.OutputModule(
         "keep nanoaodFlatTable_quarkFragmentationProducer_QHadronTable_*",
         "keep nanoaodFlatTable_quarkFragmentationProducer_QGenChargedTable_*",
         "keep nanoaodFlatTable_quarkRecoTrackMatchProducer_*",
+        "keep nanoaodFlatTable_trackTable_*",
+        "keep nanoaodFlatTable_trackGVFeatures_*",
+        "keep nanoaodFlatTable_genVertexTable_GVTable_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QGNNTrack_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QGNNPairTruth_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QGNNHadron_*",
     ),
 )
 process.end = cms.EndPath(process.out)

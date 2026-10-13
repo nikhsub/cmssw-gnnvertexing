@@ -1,4 +1,12 @@
 import FWCore.ParameterSet.Config as cms
+from PhysicsTools.SimpleVertexTable.sv_reco_cff import (
+    trackGenMatch as baseTrackGenMatch,
+    trackTable as baseTrackTable,
+    trackVertexVars as baseTrackVertexVars,
+    custom_train_features,
+)
+from PhysicsTools.SimpleVertexTable.mergedGenParticles import mergedGenParticles as mergedGenParticlesConfig
+from PhysicsTools.SimpleVertexTable.genVertices import genVertexTable as genVertexTableConfig
 
 
 # Keep this configuration identical to unpackedTracksAndVertices in
@@ -22,16 +30,50 @@ quarkRecoTrackMatchProducer = cms.EDProducer(
     maxRelPt=cms.double(0.5),
 )
 
+# Reuse the original AssociationGNN input producers and feature definitions.
+qfragTrackVertexVars = baseTrackVertexVars.clone(
+    tracks=cms.InputTag("unpackedTracksAndVertices"),
+    primaryVertices=cms.InputTag("unpackedTracksAndVertices"),
+)
+qfragTrackGenMatch = baseTrackGenMatch.clone(
+    tracks=cms.InputTag("unpackedTracksAndVertices"),
+    genParticles=cms.InputTag("mergedGenParticles"),
+)
+qfragTrackTable = baseTrackTable.clone(src=cms.InputTag("unpackedTracksAndVertices"))
+qfragMergedGenParticles = mergedGenParticlesConfig.clone()
+qfragGenVertexTable = genVertexTableConfig.clone(genParticles=cms.InputTag("mergedGenParticles"))
+
+quarkAssociationGNNTableProducer = cms.EDProducer(
+    "QuarkAssociationGNNTableProducer",
+    recoTrackTable=cms.InputTag("quarkRecoTrackMatchProducer"),
+    genChargedTable=cms.InputTag("quarkFragmentationProducer", "QGenChargedTable"),
+    hadronTable=cms.InputTag("quarkFragmentationProducer", "QHadronTable"),
+    pairTable=cms.InputTag("trackGVFeatures", "trackPair"),
+)
+
 
 def custom_quark_reco_track_matching(process):
-    """Schedule the existing unpacked tracks and Stage 2 table producer.
+    """Schedule legacy AssociationGNN features and Stage-2 QFrag associations.
 
-    The caller must schedule the Stage 1 QuarkFragmentationProducer before
-    this sequence so that its QGenChargedTable product is available.
+    The caller schedules Stage 1 first. Historical track/pair calculations and
+    labels come directly from TrackGVFeaturesProducer; QFrag truth is appended
+    by QuarkAssociationGNNTableProducer without changing Stage 2 assignments.
     """
     process.unpackedTracksAndVertices = unpackedTracksAndVertices.clone()
+    process.mergedGenParticles = qfragMergedGenParticles.clone()
+    process.trackVertexVars = qfragTrackVertexVars.clone()
+    process.trackGenMatch = qfragTrackGenMatch.clone()
+    process.trackTable = qfragTrackTable.clone()
+    process.genVertexTable = qfragGenVertexTable.clone()
+    process = custom_train_features(process, gvProducerLabel="genVertexTable")
+    # TrackGVFeaturesProducer declares this legacy token but does not read it;
+    # bind it to an available reco::VertexCollection in this training-only path.
+    process.trackGVFeatures.secondaryVertices = cms.InputTag("offlineSlimmedPrimaryVertices")
     process.quarkRecoTrackMatchProducer = quarkRecoTrackMatchProducer.clone()
+    process.quarkAssociationGNNTableProducer = quarkAssociationGNNTableProducer.clone()
     process.quark_reco_track_matching_sequence = cms.Sequence(
-        process.unpackedTracksAndVertices * process.quarkRecoTrackMatchProducer
+        process.mergedGenParticles * process.unpackedTracksAndVertices * process.trackVertexVars *
+        process.trackGenMatch * process.trackTable * process.genVertexTable * process.trackGVFeatures *
+        process.quarkRecoTrackMatchProducer * process.quarkAssociationGNNTableProducer
     )
     return process
