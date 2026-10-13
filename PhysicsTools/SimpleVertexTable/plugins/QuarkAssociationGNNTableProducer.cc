@@ -259,7 +259,7 @@ public:
       trainSourceCertain.push_back(sourceCertain[i]); trainHadronClass.push_back(hadClass[i]);
       trainHadronValid.push_back(hadTruthValid[i]);
       trainIsB.push_back(isB[i]); trainIsPromptD.push_back(isPromptD[i]);
-      trainIsDFromB.push_back(isDFromB[i]); trainIsDUnknown.push_back(hadronTruthValid[i] && hadClass[i] == 4 ? 1 : 0);
+      trainIsDFromB.push_back(isDFromB[i]); trainIsDUnknown.push_back(hadTruthValid[i] && hadClass[i] == 4 ? 1 : 0);
       trainQuarkWeakValid.push_back(weakLineage ? 1 : 0);
       trainQuarkStrictValid.push_back(strictLineage ? 1 : 0);
     }
