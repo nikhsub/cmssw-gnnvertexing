@@ -6,6 +6,10 @@ options.register("outfile", "qfrag_association_gnn.root", VarParsing.multiplicit
                  VarParsing.varType.string, "Output NanoAOD ROOT file")
 options.register("maxEvents", 100, VarParsing.multiplicity.singleton,
                  VarParsing.varType.int, "Maximum events")
+options.register("compressionAlgorithm", "ZSTD", VarParsing.multiplicity.singleton,
+                 VarParsing.varType.string, "ROOT lossless compression algorithm")
+options.register("compressionLevel", 5, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.int, "ROOT compression level")
 options.parseArguments()
 
 process = cms.Process("QFRAGTRACK")
@@ -36,6 +40,13 @@ process.out = cms.OutputModule(
         "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QGNNTrack_*",
         "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QGNNPairTruth_*",
         "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QGNNHadron_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QTrainTrack_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QTrainPair_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QTrainHadron_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QTrainQuark_*",
+        "keep nanoaodFlatTable_quarkAssociationGNNTableProducer_QTrainLegacyHadron_*",
     ),
+    compressionAlgorithm=cms.untracked.string(options.compressionAlgorithm),
+    compressionLevel=cms.untracked.int32(options.compressionLevel),
 )
 process.end = cms.EndPath(process.out)

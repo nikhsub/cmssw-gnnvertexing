@@ -31,6 +31,8 @@ quarkRecoTrackMatchProducer = cms.EDProducer(
 )
 
 # Reuse the original AssociationGNN input producers and feature definitions.
+# Compact mode removes only unused `genPartIdx` and `timeSig` columns from the
+# base table, and consequently does not schedule their legacy gen matcher.
 qfragTrackVertexVars = baseTrackVertexVars.clone(
     tracks=cms.InputTag("unpackedTracksAndVertices"),
     primaryVertices=cms.InputTag("unpackedTracksAndVertices"),
@@ -40,6 +42,10 @@ qfragTrackGenMatch = baseTrackGenMatch.clone(
     genParticles=cms.InputTag("mergedGenParticles"),
 )
 qfragTrackTable = baseTrackTable.clone(src=cms.InputTag("unpackedTracksAndVertices"))
+qfragCompactTrackTable = qfragTrackTable.clone()
+qfragCompactTrackTable.externalVariables = qfragTrackTable.externalVariables.clone()
+del qfragCompactTrackTable.externalVariables.genPartIdx
+del qfragCompactTrackTable.externalVariables.timeSig
 qfragMergedGenParticles = mergedGenParticlesConfig.clone()
 qfragGenVertexTable = genVertexTableConfig.clone(genParticles=cms.InputTag("mergedGenParticles"))
 
@@ -48,11 +54,14 @@ quarkAssociationGNNTableProducer = cms.EDProducer(
     recoTrackTable=cms.InputTag("quarkRecoTrackMatchProducer"),
     genChargedTable=cms.InputTag("quarkFragmentationProducer", "QGenChargedTable"),
     hadronTable=cms.InputTag("quarkFragmentationProducer", "QHadronTable"),
+    quarkTable=cms.InputTag("quarkFragmentationProducer", "QFragTable"),
+    legacyHadronTable=cms.InputTag("genVertexTable", "GVTable"),
     pairTable=cms.InputTag("trackGVFeatures", "trackPair"),
+    produceFullValidationTables=cms.bool(True),
 )
 
 
-def custom_quark_reco_track_matching(process):
+def custom_quark_reco_track_matching(process, compact=False):
     """Schedule legacy AssociationGNN features and Stage-2 QFrag associations.
 
     The caller schedules Stage 1 first. Historical track/pair calculations and
@@ -63,17 +72,20 @@ def custom_quark_reco_track_matching(process):
     process.mergedGenParticles = qfragMergedGenParticles.clone()
     process.trackVertexVars = qfragTrackVertexVars.clone()
     process.trackGenMatch = qfragTrackGenMatch.clone()
-    process.trackTable = qfragTrackTable.clone()
+    process.trackTable = (qfragCompactTrackTable if compact else qfragTrackTable).clone()
     process.genVertexTable = qfragGenVertexTable.clone()
     process = custom_train_features(process, gvProducerLabel="genVertexTable")
     # TrackGVFeaturesProducer declares this legacy token but does not read it;
     # bind it to an available reco::VertexCollection in this training-only path.
     process.trackGVFeatures.secondaryVertices = cms.InputTag("offlineSlimmedPrimaryVertices")
     process.quarkRecoTrackMatchProducer = quarkRecoTrackMatchProducer.clone()
-    process.quarkAssociationGNNTableProducer = quarkAssociationGNNTableProducer.clone()
+    process.quarkAssociationGNNTableProducer = quarkAssociationGNNTableProducer.clone(
+        produceFullValidationTables=cms.bool(not compact),
+    )
+    legacy_match_sequence = process.trackTable if compact else process.trackGenMatch * process.trackTable
     process.quark_reco_track_matching_sequence = cms.Sequence(
         process.mergedGenParticles * process.unpackedTracksAndVertices * process.trackVertexVars *
-        process.trackGenMatch * process.trackTable * process.genVertexTable * process.trackGVFeatures *
+        legacy_match_sequence * process.genVertexTable * process.trackGVFeatures *
         process.quarkRecoTrackMatchProducer * process.quarkAssociationGNNTableProducer
     )
     return process
