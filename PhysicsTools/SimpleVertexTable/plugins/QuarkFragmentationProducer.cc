@@ -336,6 +336,10 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   std::vector<int> v2QFrag(hPruned.size(), -1), v2Quality(hPruned.size(), kV2Missing), v2SourceCertain(hPruned.size(), 0);
   std::vector<int> v2PreHad(hPruned.size(), -1), v2KinValid(hPruned.size(), 0);
   std::vector<float> v2PreHadPt(hPruned.size(), kInvalid), v2PreHadEta(hPruned.size(), kInvalid), v2PreHadPhi(hPruned.size(), kInvalid);
+  std::vector<float> hZProj(hPruned.size(), kInvalid), hZT(hPruned.size(), kInvalid),
+      hDeltaRQuark(hPruned.size(), kInvalid), hKTrel(hPruned.size(), kInvalid);
+  std::vector<int> hObservableInputsValid(hPruned.size(), 0), hAuxiliaryTargetValid(hPruned.size(), 0),
+      hBFragmentationTargetValid(hPruned.size(), 0);
   for (size_t ih = 0; ih < hPruned.size(); ++ih) {
     const auto ancestry = ancestors(hPruned[ih], *pruned, prunedIndex);
     std::unordered_set<int> bAncestors;
@@ -471,6 +475,48 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
         }
       }
     }
+  }
+
+  // Persist the same unclipped momentum observables used by the Stage 3
+  // prompt-D study. The values are available for uniquely associated hadrons
+  // with valid proxy kinematics; the two target masks below separately select
+  // confirmed prompt-D and B fragmentation targets.
+  for (size_t ih = 0; ih < hPruned.size(); ++ih) {
+    const int qidx = v2QFrag[ih];
+    if (v2Quality[ih] != kV2Unique || qidx < 0 || static_cast<size_t>(qidx) >= qRep.size() || !v2KinValid[ih]) continue;
+    const auto& hadron = (*pruned)[hPruned[ih]];
+    const auto& quark = (*pruned)[v2PreHad[ih]];
+    const double q2 = quark.px() * quark.px() + quark.py() * quark.py() + quark.pz() * quark.pz();
+    const double qnorm = std::sqrt(q2);
+    const double qpt = quark.pt();
+    const double hpt = hadron.pt();
+    if (!(std::isfinite(hadron.px()) && std::isfinite(hadron.py()) && std::isfinite(hadron.pz()) &&
+          std::isfinite(hadron.eta()) && std::isfinite(hadron.phi()) && std::isfinite(hpt) && hpt > 0. &&
+          std::isfinite(quark.px()) && std::isfinite(quark.py()) && std::isfinite(quark.pz()) &&
+          std::isfinite(quark.eta()) && std::isfinite(quark.phi()) && std::isfinite(q2) && q2 > 0. &&
+          std::isfinite(qnorm) && qnorm > 0. && std::isfinite(qpt) && qpt > 0.)) continue;
+    const double dot = hadron.px() * quark.px() + hadron.py() * quark.py() + hadron.pz() * quark.pz();
+    const double crossX = hadron.py() * quark.pz() - hadron.pz() * quark.py();
+    const double crossY = hadron.pz() * quark.px() - hadron.px() * quark.pz();
+    const double crossZ = hadron.px() * quark.py() - hadron.py() * quark.px();
+    const double crossNorm = std::sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ);
+    const double zProj = dot / q2;
+    const double zT = hadron.pt() / qpt;
+    const double deltaR = reco::deltaR(hadron.eta(), hadron.phi(), quark.eta(), quark.phi());
+    const double kTrel = crossNorm / qnorm;
+    if (!(std::isfinite(zProj) && std::isfinite(zT) && std::isfinite(deltaR) && std::isfinite(kTrel))) continue;
+    hObservableInputsValid[ih] = 1;
+    hZProj[ih] = zProj;
+    hZT[ih] = zT;
+    hDeltaRQuark[ih] = deltaR;
+    hKTrel[ih] = kTrel;
+
+    const int quarkPdgId = (*pruned)[qRep[qidx]].pdgId();
+    const bool validPromptD = hadCharmOrigin[ih] == kPromptCharm && std::abs(quarkPdgId) == 4 &&
+                              v2SourceCertain[ih] == 1;
+    const bool validB = isBHadron(hadron.pdgId()) && std::abs(quarkPdgId) == 5 && v2SourceCertain[ih] == 1;
+    hAuxiliaryTargetValid[ih] = validPromptD;
+    hBFragmentationTargetValid[ih] = validB;
   }
 
   std::vector<int> cPacked, cPdg, cCharge, cLastPruned, cLastSelf, cFromB, cFromPromptD, cFromBtoD;
@@ -638,6 +684,13 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   hTable->addColumn<float>("preHadEta", v2PreHadEta, "pre-hadronization proxy pseudorapidity, or -999");
   hTable->addColumn<float>("preHadPhi", v2PreHadPhi, "pre-hadronization proxy azimuth [rad], or -999");
   hTable->addColumn<int>("preHadKinematicsValid", v2KinValid, "1 valid pre-hadronization kinematics, 0 otherwise");
+  hTable->addColumn<float>("zProj", hZProj, "dot(p_hadron,p_quark)/|p_quark|^2; unclipped, or -999 when unavailable");
+  hTable->addColumn<float>("zT", hZT, "hadron pT / associated quark-proxy pT; unclipped, or -999 when unavailable");
+  hTable->addColumn<float>("deltaR_DQuark", hDeltaRQuark, "deltaR between hadron and associated quark proxy (D or B), or -999");
+  hTable->addColumn<float>("kTrel", hKTrel, "|p_hadron x p_quark|/|p_quark| [GeV], or -999 when unavailable");
+  hTable->addColumn<int>("observableInputsValid", hObservableInputsValid, "1 for unique valid QFrag association, valid proxy kinematics, and finite nonzero observable inputs");
+  hTable->addColumn<int>("auxiliaryTargetValid", hAuxiliaryTargetValid, "prompt-D fragmentation target mask; preserves prompt-D meaning");
+  hTable->addColumn<int>("bFragmentationTargetValid", hBFragmentationTargetValid, "B fragmentation target mask; 1 only for uniquely associated, source-certain b-quark proxy and valid inputs");
 
   auto cTable = std::make_unique<nanoaod::FlatTable>(cPacked.size(), "QGenCharged", false, false);
   cTable->addColumn<int>("packedGenIdx", cPacked, "index in packedGenParticles");
