@@ -93,7 +93,7 @@ The compact products and columns are:
 | `trackPair` | `trk1Idx`, `trk2Idx`, `deltaR`, `deltaPhi`, `deltaEta`, `dca`, `dcaSig`, `cptopv`, `pvtoPCA1`, `pvtoPCA2`, `dotprod1`, `dotprod2`, `pairMom`, `pairInvMass`, `pt`, `eta`, `edgeLabel`. |
 | `QTrainTrack` | `trackIdx`, `hadronIdx`, `quarkIdx`, `matchStatus`, `matchDR`, `matchRelPt`, `nGenCandidates`, `associationQuality`, `membershipType`, `fragmentationSourceCertain`, `quarkWeakValid`, `quarkStrictValid`, `hadronClass`, `hadronTruthValid`, `isB`, `isPromptD`, `isDFromB`, `isDUnknown`. |
 | `QTrainPair` | `hadronTruthValid`, `sameHadron`, `sameB`, `samePromptD`, `sameDFromB`, `quarkTruthValid`, `sameQuark`, `quarkWeakTruthValid`, `sameQuarkWeak`. |
-| `QTrainHadron` | `hadronIdx`, `pdgId`, `charmOrigin`, `pt`, `eta`, `phi`, `parentBHadronIdx`, `quarkIdx`, `associationQuality`, `fragmentationSourceCertain`, `preHadPt`, `preHadEta`, `preHadPhi`, `preHadKinematicsValid`, `nAcceptedDecayTracks`, `nCategory`, `zProj`, `zT`, `deltaR_DQuark`, `kTrel`, `observableInputsValid`, `auxiliaryTargetValid`. |
+| `QTrainHadron` | `hadronIdx`, `pdgId`, `charmOrigin`, `pt`, `eta`, `phi`, `parentBHadronIdx`, `quarkIdx`, `associationQuality`, `fragmentationSourceCertain`, `preHadPt`, `preHadEta`, `preHadPhi`, `preHadKinematicsValid`, `nAcceptedDecayTracks`, `nCategory`, `zProj`, `zT`, `deltaR_DQuark`, `kTrel`, `observableInputsValid`, `auxiliaryTargetValid`, `bFragmentationTargetValid`. |
 | `QTrainQuark` | `pdgId`; the row position is the quark-system index. |
 | `QTrainLegacyHadron` | `hadronIdx`, `pdgId`, `isB`, `isD`, `fromHF`; row position matches legacy `GVTable`, which is the reference used by `track.hadidx`. |
 
@@ -113,12 +113,18 @@ table: it retains the minimal flags needed to resolve the saved legacy
 `QTrainHadron` preserves one row for every QHadron, so N0 hadrons are retained.
 Its `nAcceptedDecayTracks` and `nCategory` use the existing definition:
 membership type 1 with matched reconstructed pT>=0.4 GeV and |eta|<=2.5;
-categories 0, 1, 2, 3 mean N0, N1, N2, N3+. The auxiliary values use the
+categories 0, 1, 2, 3 mean N0, N1, N2, N3+. The four observables use the
 Stage-3 definitions in double precision and are stored as ROOT float columns;
-invalid values are NaN and controlled by `observableInputsValid`. The stricter
-`auxiliaryTargetValid` mask selects confirmed prompt D hadrons with a unique
-charm-quark association and valid finite proxy momentum, matching the previous
-Stage-3 training-target eligibility rule.
+values are NaN when their inputs are invalid. For compatibility,
+`observableInputsValid` remains the D-only input-validity mask, and
+`auxiliaryTargetValid` retains its prompt-D target meaning. The new
+`bFragmentationTargetValid` marks only B hadrons with a unique valid bottom
+QFrag association, `fragmentationSourceCertain=1`, valid pre-hadronization
+proxy kinematics, and finite nonzero momenta. For eligible B rows the four
+values are calculated relative to the saved pre-hadronization b-quark proxy;
+ambiguous, missing, incomplete, or source-uncertain associations remain NaN
+with the B mask set to zero. `deltaR_DQuark` is retained as the branch name
+for both D and B rows.
 
 `QTrainPair` omits a redundant `pairIdx`: its row number is the corresponding
 `trackPair` row, and `trackPair.trk1Idx/trk2Idx` provide the graph endpoints.

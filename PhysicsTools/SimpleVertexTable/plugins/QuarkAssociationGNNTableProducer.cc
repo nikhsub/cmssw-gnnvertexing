@@ -288,7 +288,7 @@ public:
     std::vector<float> zT(nHadrons, std::numeric_limits<float>::quiet_NaN());
     std::vector<float> deltaR(nHadrons, std::numeric_limits<float>::quiet_NaN());
     std::vector<float> kTrel(nHadrons, std::numeric_limits<float>::quiet_NaN());
-    std::vector<int> auxInputsValid(nHadrons, 0), auxPromptValid(nHadrons, 0);
+    std::vector<int> auxInputsValid(nHadrons, 0), auxPromptValid(nHadrons, 0), bFragmentationTargetValid(nHadrons, 0);
     std::vector<int> trainHadIdx, trainHadPdg, trainHadCharmOrigin, trainHadParentB;
     std::vector<int> trainHadQuarkIdx, trainHadAssocQuality, trainHadSourceCertain, trainHadPreValid;
     std::vector<float> trainHadPt, trainHadEta, trainHadPhi;
@@ -302,7 +302,12 @@ public:
     for (size_t ih = 0; ih < nHadrons; ++ih) {
       const int iq = hQuarkIdx[ih];
       const bool validQ = iq >= 0 && static_cast<size_t>(iq) < nQuarks;
-      bool finiteInputs = isDHadron(hPdgId[ih]) && validQ && hPreHadValid[ih] == 1 && hAssocQuality[ih] == 1;
+      const bool validAncestry = validQ && hPreHadValid[ih] == 1 && hAssocQuality[ih] == 1;
+      const bool isD = isDHadron(hPdgId[ih]);
+      const bool isB = isBHadron(hPdgId[ih]);
+      const bool dInputsEligible = isD && validAncestry;
+      const bool bInputsEligible = isB && validAncestry && hSourceCertain[ih] == 1 && std::abs(qPdgId[iq]) == 5;
+      bool finiteInputs = dInputsEligible || bInputsEligible;
       const double pdPt = hPt[ih], pdEta = hEta[ih], pdPhi = hPhi[ih];
       const double pqPt = hPreHadPt[ih], pqEta = hPreHadEta[ih], pqPhi = hPreHadPhi[ih];
       finiteInputs = finiteInputs && std::isfinite(pdPt) && std::isfinite(pdEta) && std::isfinite(pdPhi) &&
@@ -321,8 +326,12 @@ public:
             std::isfinite(trans) && std::isfinite(dr) && std::isfinite(kt)) {
           zProj[ih] = static_cast<float>(proj); zT[ih] = static_cast<float>(trans);
           deltaR[ih] = static_cast<float>(dr); kTrel[ih] = static_cast<float>(kt);
-          auxInputsValid[ih] = 1;
-          auxPromptValid[ih] = hCharmOrigin[ih] == 1 && std::abs(qPdgId[iq]) == 4 ? 1 : 0;
+          if (dInputsEligible) {
+            // Preserve the existing D-only meaning of these two masks.
+            auxInputsValid[ih] = 1;
+            auxPromptValid[ih] = hCharmOrigin[ih] == 1 && std::abs(qPdgId[iq]) == 4 ? 1 : 0;
+          }
+          if (bInputsEligible) bFragmentationTargetValid[ih] = 1;
         }
       }
       trainHadIdx.push_back(static_cast<int>(ih)); trainHadPdg.push_back(hPdgId[ih]);
@@ -349,12 +358,13 @@ public:
     trainHadronTable->addColumn<int>("preHadKinematicsValid", trainHadPreValid, "pre-hadronization kinematics-valid flag");
     trainHadronTable->addColumn<int>("nAcceptedDecayTracks", hadN, "matched heavy-decay tracks with pT>=0.4 GeV and |eta|<=2.5");
     trainHadronTable->addColumn<int>("nCategory", hadCategory, "0=N0, 1=N1, 2=N2, 3=N3+");
-    trainHadronTable->addColumn<float>("zProj", zProj, "dot(pD,pQ)/|pQ|^2; training-only target");
-    trainHadronTable->addColumn<float>("zT", zT, "pT(D)/pT(pre-hadronization quark); training-only target");
-    trainHadronTable->addColumn<float>("deltaR_DQuark", deltaR, "deltaR(D, pre-hadronization quark); training-only target");
-    trainHadronTable->addColumn<float>("kTrel", kTrel, "|pD cross pQ|/|pQ|; training-only target");
-    trainHadronTable->addColumn<int>("observableInputsValid", auxInputsValid, "D hadron with valid finite nonzero momenta and unique QFrag association");
+    trainHadronTable->addColumn<float>("zProj", zProj, "dot(pH,pQ)/|pQ|^2; D or B training-only target, NaN when unavailable");
+    trainHadronTable->addColumn<float>("zT", zT, "pT(H)/pT(pre-hadronization quark); D or B target, NaN when unavailable");
+    trainHadronTable->addColumn<float>("deltaR_DQuark", deltaR, "deltaR(H, pre-hadronization quark) for D or B, NaN when unavailable");
+    trainHadronTable->addColumn<float>("kTrel", kTrel, "|pH cross pQ|/|pQ| [GeV]; D or B target, NaN when unavailable");
+    trainHadronTable->addColumn<int>("observableInputsValid", auxInputsValid, "D-only observable-input mask, preserved for compatibility");
     trainHadronTable->addColumn<int>("auxiliaryTargetValid", auxPromptValid, "prompt D + unique charm QFrag + valid finite pre-hadronization momentum");
+    trainHadronTable->addColumn<int>("bFragmentationTargetValid", bFragmentationTargetValid, "B + unique |pdgId|=5 QFrag + source-certain association + valid finite nonzero proxy kinematics");
     event.put(std::move(trainHadronTable), "QTrainHadron");
 
     std::vector<int> trainQuarkPdg;

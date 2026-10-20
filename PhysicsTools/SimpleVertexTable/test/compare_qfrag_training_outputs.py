@@ -36,12 +36,13 @@ QTRAIN = {
         "hadronIdx", "pdgId", "charmOrigin", "pt", "eta", "phi", "parentBHadronIdx", "quarkIdx",
         "associationQuality", "fragmentationSourceCertain", "preHadPt", "preHadEta", "preHadPhi",
         "preHadKinematicsValid", "nAcceptedDecayTracks", "nCategory", "zProj", "zT", "deltaR_DQuark",
-        "kTrel", "observableInputsValid", "auxiliaryTargetValid",
+        "kTrel", "observableInputsValid", "auxiliaryTargetValid", "bFragmentationTargetValid",
     ),
     "QTrainQuark": ("pdgId",),
     "QTrainLegacyHadron": ("hadronIdx", "pdgId", "isB", "isD", "fromHF"),
 }
 D_HADRONS = {411, 421, 431, 4122, 4232, 4132, 4332, 4412, 4422, 4432, 4444}
+B_HADRONS = {521, 511, 531, 541, 5122, 5132, 5232, 5332, 5142, 5242, 5342, 5512, 5532, 5542, 5554}
 
 
 def compare_jagged(a, b, branch):
@@ -208,7 +209,7 @@ def main():
         # Independently recompute all four target values using full tables.
         target_fields = ["QHadron_pdgId", "QHadron_pt", "QHadron_eta", "QHadron_phi", "QHadron_preHadPt", "QHadron_preHadEta",
                          "QHadron_preHadPhi", "QHadron_preHadKinematicsValid", "QHadron_associationQuality",
-                         "QHadron_quarkIdx", "QHadron_charmOrigin", "QFrag_pdgId"]
+                         "QHadron_quarkIdx", "QHadron_charmOrigin", "QHadron_fragmentationSourceCertain", "QFrag_pdgId"]
         absent = [name for name in target_fields if name not in tf.keys()]
         if absent:
             raise ValueError("full file lacks auxiliary-target source branches: " + ", ".join(absent))
@@ -220,15 +221,21 @@ def main():
             for h in range(len(cols["QHadron_pt"])):
                 iq = cols["QHadron_quarkIdx"][h]
                 validq = 0 <= iq < len(cols["QFrag_pdgId"])
-                eligible_inputs = (validq and cols["QHadron_preHadKinematicsValid"][h] == 1 and
-                                   cols["QHadron_associationQuality"][h] == 1 and
-                                   abs(cols["QHadron_pdgId"][h]) in D_HADRONS)
+                is_d = abs(cols["QHadron_pdgId"][h]) in D_HADRONS
+                is_b = abs(cols["QHadron_pdgId"][h]) in B_HADRONS
+                valid_ancestry = (validq and cols["QHadron_preHadKinematicsValid"][h] == 1 and
+                                  cols["QHadron_associationQuality"][h] == 1)
+                d_inputs = valid_ancestry and is_d
+                b_inputs = (valid_ancestry and is_b and cols["QHadron_fragmentationSourceCertain"][h] == 1 and
+                            abs(cols["QFrag_pdgId"][iq]) == 5)
                 vals = [cols[f][h] for f in ("QHadron_pt", "QHadron_eta", "QHadron_phi",
                                              "QHadron_preHadPt", "QHadron_preHadEta", "QHadron_preHadPhi")]
-                eligible_inputs = eligible_inputs and all(math.isfinite(float(x)) for x in vals) and vals[0] > 0 and vals[3] > 0
-                valid = False
+                finite_kinematics = (all(math.isfinite(float(x)) for x in vals) and
+                                     vals[0] > 0 and vals[3] > 0)
+                valid_d = False
+                valid_b = False
                 target = [math.nan] * 4
-                if eligible_inputs:
+                if finite_kinematics and (d_inputs or b_inputs):
                     pt, eta, phi, qpt, qeta, qphi = map(float, vals)
                     pd = (pt*math.cos(phi), pt*math.sin(phi), pt*math.sinh(eta))
                     pq = (qpt*math.cos(qphi), qpt*math.sin(qphi), qpt*math.sinh(qeta))
@@ -238,17 +245,23 @@ def main():
                     cross = (pd[1]*pq[2]-pd[2]*pq[1], pd[2]*pq[0]-pd[0]*pq[2], pd[0]*pq[1]-pd[1]*pq[0])
                     target = [dot/q2, pt/qpt, math.hypot(eta-qeta, wrap_phi(phi-qphi)),
                               math.sqrt(sum(x*x for x in cross))/qnorm] if qnorm > 0 else target
-                    valid = all(math.isfinite(x) for x in target)
-                if int(compact_cols["observableInputsValid"][h]) != int(valid):
+                    valid_d = d_inputs and all(math.isfinite(x) for x in target)
+                    valid_b = b_inputs and all(math.isfinite(x) for x in target)
+                valid_values = valid_d or valid_b
+                if int(compact_cols["observableInputsValid"][h]) != int(valid_d):
                     raise ValueError("auxiliary validity mismatch at event %d hadron %d" % (i, h))
                 for name, expected in zip(("zProj", "zT", "deltaR_DQuark", "kTrel"), target):
                     got = compact_cols[name][h]
-                    if valid and not math.isclose(float(got), expected, rel_tol=args.rtol, abs_tol=args.atol):
+                    if valid_values and not math.isclose(float(got), expected, rel_tol=args.rtol, abs_tol=args.atol):
                         raise ValueError("%s mismatch at event %d hadron %d" % (name, i, h))
-                prompt_valid = bool(valid and cols["QHadron_charmOrigin"][h] == 1 and
+                    if not valid_values and not math.isnan(float(got)):
+                        raise ValueError("%s should be NaN for invalid inputs at event %d hadron %d" % (name, i, h))
+                prompt_valid = bool(valid_d and cols["QHadron_charmOrigin"][h] == 1 and
                                     abs(cols["QFrag_pdgId"][iq]) == 4)
                 if int(compact_cols["auxiliaryTargetValid"][h]) != int(prompt_valid):
                     raise ValueError("prompt auxiliary-target mask mismatch at event %d hadron %d" % (i, h))
+                if int(compact_cols["bFragmentationTargetValid"][h]) != int(valid_b):
+                    raise ValueError("B fragmentation-target mask mismatch at event %d hadron %d" % (i, h))
                 compared_targets += 1
 
         print("Full/compact validation passed: %d identical events, %d hadron target rows; all node/edge inputs, legacy labels, QTrain targets and strict QGNN labels agree." %
