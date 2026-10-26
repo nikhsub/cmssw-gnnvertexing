@@ -7,6 +7,8 @@
 #include <limits>
 #include <cmath>
 #include <algorithm>
+#include <chrono>
+#include <utility>
 
 TrackGVFeaturesProducer::TrackGVFeaturesProducer(const edm::ParameterSet& iConfig)
     : tracksToken_(consumes<std::vector<reco::Track>>(iConfig.getParameter<edm::InputTag>("tracks"))),
@@ -17,21 +19,28 @@ TrackGVFeaturesProducer::TrackGVFeaturesProducer(const edm::ParameterSet& iConfi
       ttbToken_(esConsumes(edm::ESInputTag("", "TransientTrackBuilder"))),
       trkPtCut_(iConfig.getParameter<double>("trkPtCut")),
       dRMatchMax_(iConfig.getParameter<double>("dRMatchMax")),
-      relPtMatchMax_(iConfig.getParameter<double>("relPtMatchMax"))
+      relPtMatchMax_(iConfig.getParameter<double>("relPtMatchMax")),
+      enableTwoTrackVertexFit_(iConfig.getParameter<bool>("enableTwoTrackVertexFit")),
+      enableVertexFitTiming_(iConfig.getParameter<bool>("enableVertexFitTiming")),
+      twoTrackVertexFitter_(enableTwoTrackVertexFit_ ? std::make_unique<TwoTrackVertexFitter>() : nullptr)
 {
     produces<nanoaod::FlatTable>("track");      // extension of trackTable
     produces<nanoaod::FlatTable>("trackPair");  // standalone edge table
+    if (enableTwoTrackVertexFit_) produces<nanoaod::FlatTable>("vertexFitSummary");
     //produces<nanoaod::FlatTable>("GV");         // extension of GenVertexProducer's GV table
 }
 
 void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup& iSetup) {
+    using Clock = std::chrono::steady_clock;
+    const auto totalStart = enableVertexFitTiming_ ? Clock::now() : Clock::time_point{};
     edm::Handle<std::vector<reco::Track>> tracksH;
     iEvent.getByToken(tracksToken_, tracksH);
     const auto& tracks = *tracksH;
 
     edm::Handle<std::vector<reco::Vertex>> pvH;
     iEvent.getByToken(pvToken_, pvH);
-    const reco::Vertex& pv = pvH->front();
+    const reco::Vertex* legacyPV = !pvH->empty() ? &pvH->front() : nullptr;
+    const reco::Vertex* pv = (legacyPV && !legacyPV->isFake()) ? legacyPV : nullptr;
 
 
     edm::Handle<nanoaod::FlatTable> gvTable;
@@ -150,10 +159,20 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
                        edgeDotprod1, edgeDotprod2, edgePairMom, edgePairInvMass, edgeLabel, edgePair_pt, edgePair_eta;
 
     std::vector<reco::TransientTrack> t_trks(nTrk);
+    const auto transientBuildStart = enableVertexFitTiming_ ? Clock::now() : Clock::time_point{};
     for (size_t i = 0; i < nTrk; ++i) t_trks[i] = theB.build(tracks[i]);
+    const auto transientBuildEnd = enableVertexFitTiming_ ? Clock::now() : Clock::time_point{};
 
     const float PION_MASS = 0.13957018f;
     VertexDistance3D vdist3D;
+    std::vector<TwoTrackVertexFitter::Result> fitResults;
+    std::vector<reco::TransientTrack> fitterTrackScratch;
+    if (enableTwoTrackVertexFit_) {
+        fitterTrackScratch.reserve(2);
+        fitResults.reserve(nTrk);
+    }
+    size_t attemptedFits = 0, successfulFits = 0, invalidTrackFits = 0, failedFits = 0;
+    double fitTimeMs = 0.;
 
     for (size_t i = 0; i < nTrk; ++i) {
         if (!t_trks[i].isValid()) continue;
@@ -198,15 +217,17 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
                 if (m.error() > 0) dcaSig = m.value() / m.error();
 
                 GlobalPoint cp(minDist.crossingPoint());
-                GlobalPoint pvp(pv.x(), pv.y(), pv.z());
                 GlobalPoint seedPCA  = minDist.points().second;
                 GlobalPoint trackPCA = minDist.points().first;
 
-                pvToPCA1 = (seedPCA - pvp).mag();
-                pvToPCA2 = (trackPCA - pvp).mag();
-                cptopvVal = (cp - pvp).mag();
-                dot2 = (trackPCA - pvp).unit().dot(t_trks[j].impactPointState().globalDirection().unit());
-                dot1 = (seedPCA - pvp).unit().dot(t_trks[i].impactPointState().globalDirection().unit());
+                if (legacyPV) {
+                    GlobalPoint pvp(legacyPV->x(), legacyPV->y(), legacyPV->z());
+                    pvToPCA1 = (seedPCA - pvp).mag();
+                    pvToPCA2 = (trackPCA - pvp).mag();
+                    cptopvVal = (cp - pvp).mag();
+                    dot2 = (trackPCA - pvp).unit().dot(t_trks[j].impactPointState().globalDirection().unit());
+                    dot1 = (seedPCA - pvp).unit().dot(t_trks[i].impactPointState().globalDirection().unit());
+                }
 
                 GlobalVector pairMomentum((Basic3DVector<float>)(t_trks[i].track().momentum() + t_trks[j].track().momentum()));
                 pairMomMag = pairMomentum.mag();
@@ -232,6 +253,19 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
 
             bool sameHadron = trk_hadidx[i] >= 0 && trk_hadidx[i] == trk_hadidx[j];
             edgeLabel.push_back(sameHadron ? 1.f : 0.f);
+
+            if (enableTwoTrackVertexFit_) {
+                const auto fitStart = enableVertexFitTiming_ ? Clock::now() : Clock::time_point{};
+                auto result = twoTrackVertexFitter_->fit(t_trks[i], t_trks[j], tracks[i], tracks[j], pv, fitterTrackScratch);
+                const auto fitEnd = enableVertexFitTiming_ ? Clock::now() : Clock::time_point{};
+                if (enableVertexFitTiming_)
+                    fitTimeMs += std::chrono::duration<double, std::milli>(fitEnd - fitStart).count();
+                ++attemptedFits;
+                if (result.fitValid) ++successfulFits;
+                else if (result.status == 2) ++invalidTrackFits;
+                else ++failedFits;
+                fitResults.push_back(std::move(result));
+            }
         }
     }
 
@@ -253,7 +287,94 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
     pairTable->addColumn<float>("pt", edgePair_pt, "transverse momentum of the pair");
     pairTable->addColumn<float>("eta", edgePair_eta, "eta of the pair");
     pairTable->addColumn<float>("edgeLabel", edgeLabel, "1 if both tracks truth-matched to the same GV, else 0");
+    if (enableTwoTrackVertexFit_) {
+        std::vector<int> fitValid, fitStatus, pvValid, lxyValid, signedLxyValid, l3dValid,
+                         pointing2DValid, pointing3DValid, perpendicularValid;
+        std::vector<float> chi2, ndof, chi2Ndof, probability, vx, vy, vz, covXX, covXY, covXZ,
+                           covYY, covYZ, covZZ, sigmaX, sigmaY, sigmaZ, lxy, lxyErr, lxySig,
+                           signedLxy, signedLxySig, l3d, l3dErr, l3dSig, cos2D, cos3D, perp, perpSig;
+        const size_t n = fitResults.size();
+        fitValid.reserve(n); fitStatus.reserve(n); pvValid.reserve(n); lxyValid.reserve(n); signedLxyValid.reserve(n);
+        l3dValid.reserve(n); pointing2DValid.reserve(n); pointing3DValid.reserve(n); perpendicularValid.reserve(n);
+        chi2.reserve(n); ndof.reserve(n); chi2Ndof.reserve(n); probability.reserve(n); vx.reserve(n); vy.reserve(n); vz.reserve(n);
+        covXX.reserve(n); covXY.reserve(n); covXZ.reserve(n); covYY.reserve(n); covYZ.reserve(n); covZZ.reserve(n);
+        sigmaX.reserve(n); sigmaY.reserve(n); sigmaZ.reserve(n); lxy.reserve(n); lxyErr.reserve(n); lxySig.reserve(n);
+        signedLxy.reserve(n); signedLxySig.reserve(n); l3d.reserve(n); l3dErr.reserve(n); l3dSig.reserve(n);
+        cos2D.reserve(n); cos3D.reserve(n); perp.reserve(n); perpSig.reserve(n);
+        for (const auto& r : fitResults) {
+            fitValid.push_back(r.fitValid); fitStatus.push_back(r.status); pvValid.push_back(r.pvValid);
+            lxyValid.push_back(r.lxyValid); signedLxyValid.push_back(r.signedLxyValid); l3dValid.push_back(r.l3dValid);
+            pointing2DValid.push_back(r.pointing2DValid); pointing3DValid.push_back(r.pointing3DValid);
+            perpendicularValid.push_back(r.perpendicularValid);
+            chi2.push_back(r.chi2); ndof.push_back(r.ndof); chi2Ndof.push_back(r.chi2Ndof); probability.push_back(r.probability);
+            vx.push_back(r.x); vy.push_back(r.y); vz.push_back(r.z);
+            covXX.push_back(r.covariance[0]); covXY.push_back(r.covariance[1]); covXZ.push_back(r.covariance[2]);
+            covYY.push_back(r.covariance[3]); covYZ.push_back(r.covariance[4]); covZZ.push_back(r.covariance[5]);
+            sigmaX.push_back(r.sigmaX); sigmaY.push_back(r.sigmaY); sigmaZ.push_back(r.sigmaZ);
+            lxy.push_back(r.lxy); lxyErr.push_back(r.lxyError); lxySig.push_back(r.lxySignificance);
+            signedLxy.push_back(r.signedLxy); signedLxySig.push_back(r.signedLxySignificance);
+            l3d.push_back(r.l3d); l3dErr.push_back(r.l3dError); l3dSig.push_back(r.l3dSignificance);
+            cos2D.push_back(r.cosPointing2D); cos3D.push_back(r.cosPointing3D);
+            perp.push_back(r.perpendicular); perpSig.push_back(r.perpendicularSignificance);
+        }
+        pairTable->addColumn<int>("vtxFitValid", fitValid, "1 for valid Kalman two-track vertex fit");
+        pairTable->addColumn<int>("vtxFitStatus", fitStatus, "1 success, 2 invalid track state, 3 invalid fit, 4 exception/numerics");
+        pairTable->addColumn<float>("vtxChi2", chi2, "Kalman vertex-fit chi2");
+        pairTable->addColumn<float>("vtxNdof", ndof, "Kalman vertex-fit degrees of freedom");
+        pairTable->addColumn<float>("vtxChi2Ndof", chi2Ndof, "Kalman vertex-fit chi2/ndof");
+        pairTable->addColumn<float>("vtxProb", probability, "Chi-square probability");
+        pairTable->addColumn<float>("vtxX", vx, "Fitted vertex x in cm"); pairTable->addColumn<float>("vtxY", vy, "Fitted vertex y in cm");
+        pairTable->addColumn<float>("vtxZ", vz, "Fitted vertex z in cm");
+        pairTable->addColumn<float>("vtxCovXX", covXX, "Fitted vertex covariance xx in cm^2");
+        pairTable->addColumn<float>("vtxCovXY", covXY, "Fitted vertex covariance xy in cm^2");
+        pairTable->addColumn<float>("vtxCovXZ", covXZ, "Fitted vertex covariance xz in cm^2");
+        pairTable->addColumn<float>("vtxCovYY", covYY, "Fitted vertex covariance yy in cm^2");
+        pairTable->addColumn<float>("vtxCovYZ", covYZ, "Fitted vertex covariance yz in cm^2");
+        pairTable->addColumn<float>("vtxCovZZ", covZZ, "Fitted vertex covariance zz in cm^2");
+        pairTable->addColumn<float>("vtxSigmaX", sigmaX, "Fitted vertex x uncertainty in cm");
+        pairTable->addColumn<float>("vtxSigmaY", sigmaY, "Fitted vertex y uncertainty in cm");
+        pairTable->addColumn<float>("vtxSigmaZ", sigmaZ, "Fitted vertex z uncertainty in cm");
+        pairTable->addColumn<int>("vtxPVValid", pvValid, "1 when a usable leading reconstructed PV exists");
+        pairTable->addColumn<int>("vtxLxyValid", lxyValid, "1 when Lxy and its uncertainty are valid");
+        pairTable->addColumn<float>("vtxLxy", lxy, "PV-to-SV transverse distance in cm");
+        pairTable->addColumn<float>("vtxLxyErr", lxyErr, "PV-to-SV transverse distance uncertainty in cm");
+        pairTable->addColumn<float>("vtxLxySig", lxySig, "PV-to-SV transverse distance significance");
+        pairTable->addColumn<int>("vtxSignedLxyValid", signedLxyValid, "1 when signed Lxy and significance are valid");
+        pairTable->addColumn<float>("vtxSignedLxy", signedLxy, "Signed projected transverse displacement in cm");
+        pairTable->addColumn<float>("vtxSignedLxySig", signedLxySig, "Signed transverse displacement significance");
+        pairTable->addColumn<int>("vtxL3DValid", l3dValid, "1 when L3D and its uncertainty are valid");
+        pairTable->addColumn<float>("vtxL3D", l3d, "PV-to-SV three-dimensional distance in cm");
+        pairTable->addColumn<float>("vtxL3DErr", l3dErr, "PV-to-SV three-dimensional distance uncertainty in cm");
+        pairTable->addColumn<float>("vtxL3DSig", l3dSig, "PV-to-SV three-dimensional distance significance");
+        pairTable->addColumn<int>("vtxPointing2DValid", pointing2DValid, "1 when 2D pointing cosine is valid");
+        pairTable->addColumn<float>("vtxCosPointing2D", cos2D, "Cosine between transverse displacement and pair momentum");
+        pairTable->addColumn<int>("vtxPointing3DValid", pointing3DValid, "1 when 3D pointing cosine is valid");
+        pairTable->addColumn<float>("vtxCosPointing3D", cos3D, "Cosine between 3D displacement and pair momentum");
+        pairTable->addColumn<int>("vtxPerpendicularValid", perpendicularValid, "1 when transverse pointing residual and significance are valid");
+        pairTable->addColumn<float>("vtxPerpDisplacement", perp, "Transverse displacement perpendicular to pair pT in cm");
+        pairTable->addColumn<float>("vtxPerpDisplacementSig", perpSig, "Perpendicular displacement significance, fixed momentum direction");
+    }
     iEvent.put(std::move(pairTable), "trackPair");
+
+    if (enableTwoTrackVertexFit_) {
+        auto summary = std::make_unique<nanoaod::FlatTable>(1, "vertexFitSummary", true);
+        std::vector<int> tracksCount{static_cast<int>(nTrk)}, pairCount{static_cast<int>(trk1Idx.size())};
+        std::vector<int> attempted{static_cast<int>(attemptedFits)}, successful{static_cast<int>(successfulFits)};
+        std::vector<int> invalidTracks{static_cast<int>(invalidTrackFits)}, failed{static_cast<int>(failedFits)};
+        std::vector<float> buildMs{enableVertexFitTiming_ ? static_cast<float>(std::chrono::duration<double, std::milli>(transientBuildEnd - transientBuildStart).count()) : -1.f};
+        std::vector<float> fitMs{enableVertexFitTiming_ ? static_cast<float>(fitTimeMs) : -1.f};
+        std::vector<float> totalMs{enableVertexFitTiming_ ? static_cast<float>(std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count()) : -1.f};
+        summary->addColumn<int>("nTracks", tracksCount, "Reconstructed tracks in event");
+        summary->addColumn<int>("nSelectedPairs", pairCount, "Rows in the original selected trackPair table");
+        summary->addColumn<int>("nFitAttempts", attempted, "Number of attempted two-track fits");
+        summary->addColumn<int>("nFitSuccess", successful, "Number of valid two-track fits");
+        summary->addColumn<int>("nInvalidTrackState", invalidTracks, "Fits skipped due to invalid transient-track state");
+        summary->addColumn<int>("nFitFailure", failed, "Invalid fit results, exceptions, or invalid fit numerics");
+        summary->addColumn<float>("transientTrackBuildMs", buildMs, "Transient-track construction time; -1 when timing disabled");
+        summary->addColumn<float>("vertexFitMs", fitMs, "Cumulative fitter-call time; -1 when timing disabled");
+        summary->addColumn<float>("producerTotalMs", totalMs, "Producer wall time; -1 when timing disabled");
+        iEvent.put(std::move(summary), "vertexFitSummary");
+    }
 
 
 }

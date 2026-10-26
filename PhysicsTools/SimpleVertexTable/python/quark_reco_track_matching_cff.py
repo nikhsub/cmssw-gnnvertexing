@@ -61,7 +61,8 @@ quarkAssociationGNNTableProducer = cms.EDProducer(
 )
 
 
-def custom_quark_reco_track_matching(process, compact=False):
+def custom_quark_reco_track_matching(process, compact=False, enableTwoTrackVertexFit=False,
+                                     enableVertexFitTiming=False):
     """Schedule legacy AssociationGNN features and Stage-2 QFrag associations.
 
     The caller schedules Stage 1 first. Historical track/pair calculations and
@@ -74,7 +75,9 @@ def custom_quark_reco_track_matching(process, compact=False):
     process.trackGenMatch = qfragTrackGenMatch.clone()
     process.trackTable = (qfragCompactTrackTable if compact else qfragTrackTable).clone()
     process.genVertexTable = qfragGenVertexTable.clone()
-    process = custom_train_features(process, gvProducerLabel="genVertexTable")
+    process = custom_train_features(process, gvProducerLabel="genVertexTable",
+                                    enableTwoTrackVertexFit=enableTwoTrackVertexFit,
+                                    enableVertexFitTiming=enableVertexFitTiming)
     # TrackGVFeaturesProducer declares this legacy token but does not read it;
     # bind it to an available reco::VertexCollection in this training-only path.
     process.trackGVFeatures.secondaryVertices = cms.InputTag("offlineSlimmedPrimaryVertices")

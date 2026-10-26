@@ -15,8 +15,10 @@
 #include "TrackingTools/TransientTrack/interface/TransientTrack.h"
 #include "TrackingTools/Records/interface/TransientTrackRecord.h"
 #include "TrackingTools/TransientTrack/interface/TransientTrackBuilder.h"
+#include "PhysicsTools/SimpleVertexTable/interface/TwoTrackVertexFitter.h"
 
 #include <vector>
+#include <memory>
 
 class TrackGVFeaturesProducer : public edm::stream::EDProducer<> {
 public:
@@ -40,5 +42,8 @@ private:
     double dRMatchMax_;
     double relPtMatchMax_;
     double dlenSigMin_;
+    bool enableTwoTrackVertexFit_;
+    bool enableVertexFitTiming_;
+    std::unique_ptr<TwoTrackVertexFitter> twoTrackVertexFitter_;
 };
 #endif

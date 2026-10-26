@@ -10,6 +10,10 @@ options.register("compressionAlgorithm", "ZSTD", VarParsing.multiplicity.singlet
                  VarParsing.varType.string, "ROOT lossless compression algorithm")
 options.register("compressionLevel", 5, VarParsing.multiplicity.singleton,
                  VarParsing.varType.int, "ROOT compression level")
+options.register("enableTwoTrackVertexFit", False, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.bool, "Enable optional covariance-aware pair vertex fits")
+options.register("enableVertexFitTiming", False, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.bool, "Store per-event vertex-fit timing counters")
 options.parseArguments()
 
 process = cms.Process("QFRAGTRACK")
@@ -20,7 +24,11 @@ from PhysicsTools.SimpleVertexTable.quark_fragmentation_cff import custom_quark_
 from PhysicsTools.SimpleVertexTable.quark_reco_track_matching_cff import custom_quark_reco_track_matching
 
 process = custom_quark_fragmentation_training(process)
-process = custom_quark_reco_track_matching(process)
+process = custom_quark_reco_track_matching(
+    process,
+    enableTwoTrackVertexFit=options.enableTwoTrackVertexFit,
+    enableVertexFitTiming=options.enableVertexFitTiming,
+)
 process.qfragTrackPath = cms.Path(
     process.quark_fragmentation_sequence * process.quark_reco_track_matching_sequence
 )

@@ -232,7 +232,8 @@ def custom_sv_tracks_training(process):
                                       )
   return process
 
-def custom_train_features(process, gvProducerLabel="genVertexProducer"):
+def custom_train_features(process, gvProducerLabel="genVertexProducer", enableTwoTrackVertexFit=False,
+                          enableVertexFitTiming=False):
     process.trackGVFeatures = cms.EDProducer("TrackGVFeaturesProducer",
         tracks = cms.InputTag("unpackedTracksAndVertices"),
         primaryVertices = cms.InputTag("unpackedTracksAndVertices"),
@@ -244,5 +245,7 @@ def custom_train_features(process, gvProducerLabel="genVertexProducer"):
         relPtMatchMax = cms.double(0.2),
         trkMinPt = cms.double(0.4),
         trkMaxEta = cms.double(2.5),
+        enableTwoTrackVertexFit = cms.bool(enableTwoTrackVertexFit),
+        enableVertexFitTiming = cms.bool(enableVertexFitTiming),
     )
     return process
