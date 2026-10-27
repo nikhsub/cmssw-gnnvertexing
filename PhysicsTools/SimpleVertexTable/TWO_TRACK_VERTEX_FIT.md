@@ -39,6 +39,15 @@ the current pair loop itself skips invalid transient tracks, status 2 is a
 defensive code path and is expected to be rare/unreachable for selected pairs.
 Fit failures do not remove pair rows.
 
+`vtxCovarianceValid` is separate from `vtxFitValid`: the fitter may return a
+valid position and fit quality with a numerically non-positive-semidefinite
+position covariance. In that case the raw covariance components and position
+are retained for diagnosis, `vtxCovarianceValid` is 0, and covariance-dependent
+displacement uncertainties/significances are marked invalid. Position-only
+pointing cosines may remain valid. The covariance check requires nonnegative
+diagonal elements and checks all principal minors/determinant with a relative
+`1e-10` tolerance.
+
 Position is in cm; covariance in cm^2; uncertainties and displacement values
 in cm. Fit outputs are `vtxChi2`, `vtxNdof`, `vtxChi2Ndof`, `vtxProb`, `vtxX`,
 `vtxY`, `vtxZ`, `vtxCovXX`, `vtxCovXY`, `vtxCovXZ`, `vtxCovYY`, `vtxCovYZ`,
@@ -76,7 +85,7 @@ invalidates only the affected derived quantity, not the fit.
 
 Enabling the fit also emits one singleton `vertexFitSummary` table row per
 event with track count, selected pair count, attempted/successful/failed fit
-counts, and timing fields. `enableVertexFitTiming=True` enables steady-clock
+counts, covariance-invalid fit count, and timing fields. `enableVertexFitTiming=True` enables steady-clock
 measurements for transient-track construction, cumulative fitter calls, and
 the producer's event-local wall time. Timing fields are `-1` when timing is
 disabled. Counters have negligible work compared with the fits; no per-pair

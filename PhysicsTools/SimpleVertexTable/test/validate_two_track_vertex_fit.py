@@ -20,7 +20,7 @@ FIT_FLOATS = [
     "vtxSignedLxy", "vtxSignedLxySig", "vtxL3D", "vtxL3DErr", "vtxL3DSig",
     "vtxCosPointing2D", "vtxCosPointing3D", "vtxPerpDisplacement", "vtxPerpDisplacementSig",
 ]
-VALID_FLAGS = ["vtxFitValid", "vtxPVValid", "vtxLxyValid", "vtxSignedLxyValid", "vtxL3DValid",
+VALID_FLAGS = ["vtxFitValid", "vtxCovarianceValid", "vtxPVValid", "vtxLxyValid", "vtxSignedLxyValid", "vtxL3DValid",
                "vtxPointing2DValid", "vtxPointing3DValid", "vtxPerpendicularValid"]
 FIT_BRANCHES = ["vtxFitStatus"] + FIT_FLOATS + VALID_FLAGS
 SENTINEL = -9999.0
@@ -88,7 +88,8 @@ def collect(path, require_fit):
         fit_names = {name: find_branch(tree, name) for name in FIT_BRANCHES}
     summary_names = {}
     if require_fit:
-        for name in ("nTracks", "nSelectedPairs", "nFitAttempts", "nFitSuccess", "nInvalidTrackState", "nFitFailure",
+        for name in ("nTracks", "nSelectedPairs", "nFitAttempts", "nFitSuccess", "nCovarianceInvalid",
+                     "nInvalidTrackState", "nFitFailure",
                      "transientTrackBuildMs", "vertexFitMs", "producerTotalMs"):
             matches = [b.GetName() for b in tree.GetListOfBranches() if b.GetName().endswith("vertexFitSummary_" + name)]
             if len(matches) != 1:
@@ -99,7 +100,8 @@ def collect(path, require_fit):
     def bad_check(name):
         checks[name] = checks.get(name, 0) + 1
     stats = {"events": int(tree.GetEntries()), "pairs": 0, "attempts": 0, "success": 0,
-                           "failed": 0, "invalid_tracks": 0, "bad_rows": 0, "timing_fit_ms": 0.0,
+                           "failed": 0, "invalid_tracks": 0, "covariance_invalid": 0,
+                           "bad_rows": 0, "timing_fit_ms": 0.0,
                            "timing_build_ms": 0.0, "timing_total_ms": 0.0,
                            "minimumNormalizedCovarianceDiagonal": math.inf,
                            "minimumNormalized2x2PrincipalMinor": math.inf,
@@ -127,6 +129,9 @@ def collect(path, require_fit):
         status = list(map(int, columns["vtxFitStatus"]))
         stats["attempts"] += len(pairs)
         stats["success"] += sum(valid)
+        covariance_valid = list(map(int, columns["vtxCovarianceValid"]))
+        event_covariance_invalid = sum(ok and not cov_ok for ok, cov_ok in zip(valid, covariance_valid))
+        stats["covariance_invalid"] += event_covariance_invalid
         stats["failed"] += sum(s not in (1, 2) for s in status)
         stats["invalid_tracks"] += sum(s == 2 for s in status)
         for i, ok in enumerate(valid):
@@ -136,6 +141,9 @@ def collect(path, require_fit):
                 flag_value = int(columns[flag][i])
                 if flag_value not in (0, 1):
                     bad_check("non_boolean_validity_flag")
+            if not covariance_valid[i] and any(int(columns[flag][i]) for flag in
+                                               ("vtxLxyValid", "vtxSignedLxyValid", "vtxL3DValid", "vtxPerpendicularValid")):
+                bad_check("covariance_dependent_feature_marked_valid_with_invalid_covariance")
             for flag, value_names in {
                 "vtxLxyValid": ("vtxLxy", "vtxLxyErr", "vtxLxySig"),
                 "vtxSignedLxyValid": ("vtxSignedLxy", "vtxSignedLxySig"),
@@ -172,11 +180,11 @@ def collect(path, require_fit):
                     stats["minimumNormalized2x2PrincipalMinor"], *(value / scale**2 for value in minor2))
                 stats["minimumNormalizedCovarianceDeterminant"] = min(
                     stats["minimumNormalizedCovarianceDeterminant"], determinant / scale**3)
-                if bad_diagonal:
+                if covariance_valid[i] and bad_diagonal:
                     bad_check("covariance_negative_diagonal")
-                if bad_minor2:
+                if covariance_valid[i] and bad_minor2:
                     bad_check("covariance_negative_2x2_principal_minor")
-                if bad_determinant:
+                if covariance_valid[i] and bad_determinant:
                     bad_check("covariance_negative_determinant")
                 if (bad_diagonal or bad_minor2 or bad_determinant) and len(covariance_examples) < 5:
                     covariance_examples.append({
@@ -194,6 +202,8 @@ def collect(path, require_fit):
             bad_check("summary_pair_count_mismatch")
         if int(sums["nFitSuccess"][0]) != sum(valid):
             bad_check("summary_success_count_mismatch")
+        if int(sums["nCovarianceInvalid"][0]) != event_covariance_invalid:
+            bad_check("summary_covariance_invalid_count_mismatch")
         stats["timing_build_ms"] += max(0.0, float(sums["transientTrackBuildMs"][0]))
         stats["timing_fit_ms"] += max(0.0, float(sums["vertexFitMs"][0]))
         stats["timing_total_ms"] += max(0.0, float(sums["producerTotalMs"][0]))

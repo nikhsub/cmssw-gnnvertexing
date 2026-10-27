@@ -25,6 +25,7 @@ public:
   struct Result {
     int status = 0;  // 1 success, 2 invalid track state, 3 invalid fitter result, 4 exception/invalid numerics
     int fitValid = 0;
+    int covarianceValid = 0;
     int pvValid = 0;
     int lxyValid = 0;
     int signedLxyValid = 0;
@@ -108,7 +109,9 @@ public:
       out.covariance = {{static_cast<float>(cov(0, 0)), static_cast<float>(cov(0, 1)),
                          static_cast<float>(cov(0, 2)), static_cast<float>(cov(1, 1)),
                          static_cast<float>(cov(1, 2)), static_cast<float>(cov(2, 2))}};
-      out.sigmaX = std::sqrt(cov(0, 0)); out.sigmaY = std::sqrt(cov(1, 1)); out.sigmaZ = std::sqrt(cov(2, 2));
+      if (cov(0, 0) >= 0.) out.sigmaX = std::sqrt(cov(0, 0));
+      if (cov(1, 1) >= 0.) out.sigmaY = std::sqrt(cov(1, 1));
+      if (cov(2, 2) >= 0.) out.sigmaZ = std::sqrt(cov(2, 2));
       const float rawFloats[] = {out.x, out.y, out.z, out.chi2, out.ndof, out.chi2Ndof, out.probability,
                                  out.sigmaX, out.sigmaY, out.sigmaZ, out.covariance[0], out.covariance[1],
                                  out.covariance[2], out.covariance[3], out.covariance[4], out.covariance[5]};
@@ -119,6 +122,26 @@ public:
           return out;
         }
       }
+      // A CachingVertex can be marked valid while its covariance is numerically
+      // indefinite. Keep the fit position/quality and raw matrix for diagnosis,
+      // but gate covariance-dependent uncertainties with this separate flag.
+      const double covarianceScale = std::max({std::abs(cov(0, 0)), std::abs(cov(1, 1)),
+                                               std::abs(cov(2, 2)), 1.e-30});
+      const double tolerance1 = 1.e-10 * covarianceScale;
+      const double tolerance2 = 1.e-10 * covarianceScale * covarianceScale;
+      const double tolerance3 = tolerance2 * covarianceScale;
+      const double minorXY = cov(0, 0) * cov(1, 1) - cov(0, 1) * cov(0, 1);
+      const double minorXZ = cov(0, 0) * cov(2, 2) - cov(0, 2) * cov(0, 2);
+      const double minorYZ = cov(1, 1) * cov(2, 2) - cov(1, 2) * cov(1, 2);
+      const double determinant = cov(0, 0) * cov(1, 1) * cov(2, 2) +
+                                 2. * cov(0, 1) * cov(0, 2) * cov(1, 2) -
+                                 cov(0, 0) * cov(1, 2) * cov(1, 2) -
+                                 cov(1, 1) * cov(0, 2) * cov(0, 2) -
+                                 cov(2, 2) * cov(0, 1) * cov(0, 1);
+      out.covarianceValid = cov(0, 0) >= 0. && cov(1, 1) >= 0. &&
+                            cov(2, 2) >= 0. && minorXY >= -tolerance2 &&
+                            minorXZ >= -tolerance2 && minorYZ >= -tolerance2 &&
+                            determinant >= -tolerance3;
 
       if (!primaryVertex || primaryVertex->isFake()) return out;
       const auto& pvc = primaryVertex->covariance();
@@ -144,14 +167,14 @@ public:
       if (!std::isfinite(dx + dy + dz + lxy + l3d + cxx + cxy + cxz + cyy + cyz + czz)) return out;
       out.pvValid = 1;
 
-      if (lxy > 0. && lxyVar > 0. && std::isfinite(lxyVar)) {
+      if (out.covarianceValid && lxy > 0. && lxyVar > 0. && std::isfinite(lxyVar)) {
         const double error = std::sqrt(lxyVar), significance = lxy / error;
         if (std::isfinite(error) && std::isfinite(significance) && std::isfinite(static_cast<float>(lxy)) &&
             std::isfinite(static_cast<float>(error)) && std::isfinite(static_cast<float>(significance))) {
           out.lxy = lxy; out.lxyError = error; out.lxySignificance = significance; out.lxyValid = 1;
         }
       }
-      if (l3d > 0. && l3dVar > 0. && std::isfinite(l3dVar)) {
+      if (out.covarianceValid && l3d > 0. && l3dVar > 0. && std::isfinite(l3dVar)) {
         const double error = std::sqrt(l3dVar), significance = l3d / error;
         if (std::isfinite(error) && std::isfinite(significance) && std::isfinite(static_cast<float>(l3d)) &&
             std::isfinite(static_cast<float>(error)) && std::isfinite(static_cast<float>(significance))) {
@@ -162,7 +185,7 @@ public:
         const double ux = px / pt, uy = py / pt;
         const double signedLxy = dx * ux + dy * uy;
         const double alongVar = ux * ux * cxx + 2. * ux * uy * cxy + uy * uy * cyy;
-        if (alongVar > 0. && std::isfinite(alongVar)) {
+        if (out.covarianceValid && alongVar > 0. && std::isfinite(alongVar)) {
           const double significance = signedLxy / std::sqrt(alongVar);
           if (std::isfinite(signedLxy) && std::isfinite(significance) && std::isfinite(static_cast<float>(signedLxy)) &&
               std::isfinite(static_cast<float>(significance))) {
@@ -177,7 +200,7 @@ public:
         }
         const double nx = -uy, ny = ux;
         const double perpVar = nx * nx * cxx + 2. * nx * ny * cxy + ny * ny * cyy;
-        if (perpVar > 0. && std::isfinite(perpVar)) {
+        if (out.covarianceValid && perpVar > 0. && std::isfinite(perpVar)) {
           const double value = dx * nx + dy * ny;
           const double significance = value / std::sqrt(perpVar);
           if (std::isfinite(value) && std::isfinite(significance) && std::isfinite(static_cast<float>(value)) &&

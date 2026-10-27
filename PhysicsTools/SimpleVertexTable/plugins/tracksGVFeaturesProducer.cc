@@ -171,7 +171,7 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
         fitterTrackScratch.reserve(2);
         fitResults.reserve(nTrk);
     }
-    size_t attemptedFits = 0, successfulFits = 0, invalidTrackFits = 0, failedFits = 0;
+    size_t attemptedFits = 0, successfulFits = 0, invalidCovarianceFits = 0, invalidTrackFits = 0, failedFits = 0;
     double fitTimeMs = 0.;
 
     for (size_t i = 0; i < nTrk; ++i) {
@@ -264,6 +264,7 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
                 if (result.fitValid) ++successfulFits;
                 else if (result.status == 2) ++invalidTrackFits;
                 else ++failedFits;
+                if (result.fitValid && !result.covarianceValid) ++invalidCovarianceFits;
                 fitResults.push_back(std::move(result));
             }
         }
@@ -288,13 +289,13 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
     pairTable->addColumn<float>("eta", edgePair_eta, "eta of the pair");
     pairTable->addColumn<float>("edgeLabel", edgeLabel, "1 if both tracks truth-matched to the same GV, else 0");
     if (enableTwoTrackVertexFit_) {
-        std::vector<int> fitValid, fitStatus, pvValid, lxyValid, signedLxyValid, l3dValid,
+        std::vector<int> fitValid, fitStatus, covarianceValid, pvValid, lxyValid, signedLxyValid, l3dValid,
                          pointing2DValid, pointing3DValid, perpendicularValid;
         std::vector<float> chi2, ndof, chi2Ndof, probability, vx, vy, vz, covXX, covXY, covXZ,
                            covYY, covYZ, covZZ, sigmaX, sigmaY, sigmaZ, lxy, lxyErr, lxySig,
                            signedLxy, signedLxySig, l3d, l3dErr, l3dSig, cos2D, cos3D, perp, perpSig;
         const size_t n = fitResults.size();
-        fitValid.reserve(n); fitStatus.reserve(n); pvValid.reserve(n); lxyValid.reserve(n); signedLxyValid.reserve(n);
+        fitValid.reserve(n); fitStatus.reserve(n); covarianceValid.reserve(n); pvValid.reserve(n); lxyValid.reserve(n); signedLxyValid.reserve(n);
         l3dValid.reserve(n); pointing2DValid.reserve(n); pointing3DValid.reserve(n); perpendicularValid.reserve(n);
         chi2.reserve(n); ndof.reserve(n); chi2Ndof.reserve(n); probability.reserve(n); vx.reserve(n); vy.reserve(n); vz.reserve(n);
         covXX.reserve(n); covXY.reserve(n); covXZ.reserve(n); covYY.reserve(n); covYZ.reserve(n); covZZ.reserve(n);
@@ -302,7 +303,8 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
         signedLxy.reserve(n); signedLxySig.reserve(n); l3d.reserve(n); l3dErr.reserve(n); l3dSig.reserve(n);
         cos2D.reserve(n); cos3D.reserve(n); perp.reserve(n); perpSig.reserve(n);
         for (const auto& r : fitResults) {
-            fitValid.push_back(r.fitValid); fitStatus.push_back(r.status); pvValid.push_back(r.pvValid);
+            fitValid.push_back(r.fitValid); fitStatus.push_back(r.status); covarianceValid.push_back(r.covarianceValid);
+            pvValid.push_back(r.pvValid);
             lxyValid.push_back(r.lxyValid); signedLxyValid.push_back(r.signedLxyValid); l3dValid.push_back(r.l3dValid);
             pointing2DValid.push_back(r.pointing2DValid); pointing3DValid.push_back(r.pointing3DValid);
             perpendicularValid.push_back(r.perpendicularValid);
@@ -319,6 +321,7 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
         }
         pairTable->addColumn<int>("vtxFitValid", fitValid, "1 for valid Kalman two-track vertex fit");
         pairTable->addColumn<int>("vtxFitStatus", fitStatus, "1 success, 2 invalid track state, 3 invalid fit, 4 exception/numerics");
+        pairTable->addColumn<int>("vtxCovarianceValid", covarianceValid, "1 when the fitted 3x3 position covariance is positive semidefinite");
         pairTable->addColumn<float>("vtxChi2", chi2, "Kalman vertex-fit chi2");
         pairTable->addColumn<float>("vtxNdof", ndof, "Kalman vertex-fit degrees of freedom");
         pairTable->addColumn<float>("vtxChi2Ndof", chi2Ndof, "Kalman vertex-fit chi2/ndof");
@@ -360,6 +363,7 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
         auto summary = std::make_unique<nanoaod::FlatTable>(1, "vertexFitSummary", true);
         std::vector<int> tracksCount{static_cast<int>(nTrk)}, pairCount{static_cast<int>(trk1Idx.size())};
         std::vector<int> attempted{static_cast<int>(attemptedFits)}, successful{static_cast<int>(successfulFits)};
+        std::vector<int> covarianceInvalid{static_cast<int>(invalidCovarianceFits)};
         std::vector<int> invalidTracks{static_cast<int>(invalidTrackFits)}, failed{static_cast<int>(failedFits)};
         std::vector<float> buildMs{enableVertexFitTiming_ ? static_cast<float>(std::chrono::duration<double, std::milli>(transientBuildEnd - transientBuildStart).count()) : -1.f};
         std::vector<float> fitMs{enableVertexFitTiming_ ? static_cast<float>(fitTimeMs) : -1.f};
@@ -368,6 +372,7 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
         summary->addColumn<int>("nSelectedPairs", pairCount, "Rows in the original selected trackPair table");
         summary->addColumn<int>("nFitAttempts", attempted, "Number of attempted two-track fits");
         summary->addColumn<int>("nFitSuccess", successful, "Number of valid two-track fits");
+        summary->addColumn<int>("nCovarianceInvalid", covarianceInvalid, "Valid fits whose covariance matrix failed the PSD check");
         summary->addColumn<int>("nInvalidTrackState", invalidTracks, "Fits skipped due to invalid transient-track state");
         summary->addColumn<int>("nFitFailure", failed, "Invalid fit results, exceptions, or invalid fit numerics");
         summary->addColumn<float>("transientTrackBuildMs", buildMs, "Transient-track construction time; -1 when timing disabled");
