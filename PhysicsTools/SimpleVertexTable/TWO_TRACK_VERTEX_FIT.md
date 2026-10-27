@@ -14,7 +14,11 @@ The fit logic is isolated in the reusable
 uses one stream-local `KalmanVertexFitter(false)` (unconstrained, no smoothing)
 per producer instance and one fit per saved pair. The two-element input vector
 is reserved once per event and reused. Fits are never gated on `edgeLabel` or
-other generator truth.
+other generator truth. `KalmanVertexFitter::vertex` returns a
+`CachingVertex<5>`; the helper reads its position, error, chi-squared, and
+degrees of freedom directly and converts only the covariance matrix. It avoids
+converting each result through `TransientVertex`, which would rebuild per-fit
+track containers.
 
 The pair table remains named `trackPair`. When enabled, fit columns are added
 to that same table in precisely its row order. The row count, endpoints,

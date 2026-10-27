@@ -4,6 +4,7 @@
 #include "DataFormats/TrackReco/interface/Track.h"
 #include "DataFormats/VertexReco/interface/Vertex.h"
 #include "RecoVertex/KalmanVertexFit/interface/KalmanVertexFitter.h"
+#include "RecoVertex/VertexPrimitives/interface/ConvertError.h"
 #include "TrackingTools/TransientTrack/interface/TransientTrack.h"
 
 #include <algorithm>
@@ -61,21 +62,25 @@ public:
       scratchTracks.clear();
       scratchTracks.push_back(first);
       scratchTracks.push_back(second);
-      const reco::Vertex fitted = fitter_.vertex(scratchTracks);
+      // KalmanVertexFitter returns CachingVertex<5>; extract its state directly
+      // rather than converting through TransientVertex/reco::Vertex, which
+      // would rebuild track containers for every pair.
+      const auto fitted = fitter_.vertex(scratchTracks);
       if (!fitted.isValid()) {
         out.status = 3;
         return out;
       }
 
-      const double chi2 = fitted.chi2();
-      const double ndof = fitted.ndof();
+      const auto position = fitted.position();
+      const double chi2 = fitted.totalChiSquared();
+      const double ndof = fitted.degreesOfFreedom();
       if (!std::isfinite(chi2) || !std::isfinite(ndof) || ndof > std::numeric_limits<int>::max()) {
         out.status = 4;
         return out;
       }
       const int ndofInt = static_cast<int>(std::lround(ndof));
-      const auto& cov = fitted.covariance();
-      const double values[] = {fitted.x(), fitted.y(), fitted.z(), chi2, ndof,
+      const auto cov = RecoVertex::convertError(fitted.error());
+      const double values[] = {position.x(), position.y(), position.z(), chi2, ndof,
                                cov(0, 0), cov(0, 1), cov(0, 2), cov(1, 1), cov(1, 2), cov(2, 2)};
       for (double value : values) {
         if (!std::isfinite(value)) {
@@ -91,7 +96,7 @@ public:
 
       out.status = 1;
       out.fitValid = 1;
-      out.x = fitted.x(); out.y = fitted.y(); out.z = fitted.z();
+      out.x = position.x(); out.y = position.y(); out.z = position.z();
       out.chi2 = chi2; out.ndof = ndof;
       out.chi2Ndof = chi2 / ndof;
       out.probability = TMath::Prob(chi2, ndofInt);
