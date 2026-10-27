@@ -133,7 +133,8 @@ python3 PhysicsTools/SimpleVertexTable/test/validate_two_track_vertex_fit.py \
 The script checks presence of fit branches, pair row counts and exact endpoint
 identity against the baseline, fit/status consistency, finite valid values,
 probability range, covariance principal minors, and per-event summary counts.
-It also writes a compact CSV with pair/fit counts and fit timing totals. The
+It writes a compact CSV with pair/fit counts and fit timing totals even when
+consistency checks fail, and prints the failing check categories. The
 external `/usr/bin/time -v` records provide total CPU/wall time and peak RSS;
 the script includes these values in the CSV and computes incremental CPU per
 attempted fit as `(enabled user+system seconds - baseline user+system seconds) /

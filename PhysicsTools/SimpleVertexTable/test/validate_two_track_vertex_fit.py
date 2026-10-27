@@ -94,7 +94,10 @@ def collect(path, require_fit):
                 raise RuntimeError(path + " missing or ambiguous vertexFitSummary_" + name + ": " + repr(matches))
             summary_names[name] = matches[0]
 
-    pair_ids, original_pair_columns, stats = [], {}, {"events": int(tree.GetEntries()), "pairs": 0, "attempts": 0, "success": 0,
+    pair_ids, original_pair_columns, checks = [], {}, {}
+    def bad_check(name):
+        checks[name] = checks.get(name, 0) + 1
+    stats = {"events": int(tree.GetEntries()), "pairs": 0, "attempts": 0, "success": 0,
                            "failed": 0, "invalid_tracks": 0, "bad_rows": 0, "timing_fit_ms": 0.0,
                            "timing_build_ms": 0.0, "timing_total_ms": 0.0}
     for entry in tree:
@@ -122,11 +125,11 @@ def collect(path, require_fit):
         stats["invalid_tracks"] += sum(s == 2 for s in status)
         for i, ok in enumerate(valid):
             if status[i] not in (1, 2, 3, 4) or ok not in (0, 1) or ok != int(status[i] == 1):
-                stats["bad_rows"] += 1
+                bad_check("status_validity_mismatch")
             for flag in VALID_FLAGS[1:]:
                 flag_value = int(columns[flag][i])
                 if flag_value not in (0, 1):
-                    stats["bad_rows"] += 1
+                    bad_check("non_boolean_validity_flag")
             for flag, value_names in {
                 "vtxLxyValid": ("vtxLxy", "vtxLxyErr", "vtxLxySig"),
                 "vtxSignedLxyValid": ("vtxSignedLxy", "vtxSignedLxySig"),
@@ -137,16 +140,16 @@ def collect(path, require_fit):
             }.items():
                 expected_sentinel = int(columns[flag][i]) == 0
                 if any((float(columns[name][i]) == SENTINEL) != expected_sentinel for name in value_names):
-                    stats["bad_rows"] += 1
+                    bad_check("derived_validity_sentinel_mismatch")
             for name in FIT_FLOATS:
                 x = float(columns[name][i])
                 if ok and not math.isfinite(x):
-                    stats["bad_rows"] += 1
+                    bad_check("nonfinite_valid_fit_value")
                 if not ok and x != SENTINEL:
-                    stats["bad_rows"] += 1
+                    bad_check("invalid_fit_value_not_sentinel")
             probability = float(columns["vtxProb"][i])
             if ok and not 0.0 <= probability <= 1.0:
-                stats["bad_rows"] += 1
+                bad_check("probability_out_of_range")
             if ok:
                 xx, xy, xz = (float(columns[n][i]) for n in ("vtxCovXX", "vtxCovXY", "vtxCovXZ"))
                 yy, yz, zz = (float(columns[n][i]) for n in ("vtxCovYY", "vtxCovYZ", "vtxCovZZ"))
@@ -155,18 +158,21 @@ def collect(path, require_fit):
                 determinant = xx * yy * zz + 2 * xy * xz * yz - xx * yz**2 - yy * xz**2 - zz * xy**2
                 if xx < -tol1 or yy < -tol1 or zz < -tol1 or xx * yy - xy * xy < -tol2 or \
                    xx * zz - xz * xz < -tol2 or yy * zz - yz * yz < -tol2 or determinant < -tol3:
-                    stats["bad_rows"] += 1
+                    bad_check("covariance_not_positive_semidefinite_at_float_precision")
         sums = {name: branch_values(tree, branch) for name, branch in summary_names.items()}
         if any(len(values) != 1 for values in sums.values()):
             raise RuntimeError(path + ": expected singleton event summary rows")
         if int(sums["nSelectedPairs"][0]) != len(pairs) or int(sums["nFitAttempts"][0]) != len(pairs):
-            stats["bad_rows"] += 1
+            bad_check("summary_pair_count_mismatch")
         if int(sums["nFitSuccess"][0]) != sum(valid):
-            stats["bad_rows"] += 1
+            bad_check("summary_success_count_mismatch")
         stats["timing_build_ms"] += max(0.0, float(sums["transientTrackBuildMs"][0]))
         stats["timing_fit_ms"] += max(0.0, float(sums["vertexFitMs"][0]))
         stats["timing_total_ms"] += max(0.0, float(sums["producerTotalMs"][0]))
     f.Close()
+    stats["bad_rows"] = sum(checks.values())
+    for name, count in checks.items():
+        stats["check_" + name] = count
     return pair_ids, original_pair_columns, stats
 
 
@@ -188,18 +194,22 @@ def main():
     else:
         enabled["incrementalCpuSecondsPerAttempt"] = -1.0
     identity_ok = len(base_ids) == len(enabled_ids) and all(a == b for a, b in zip(base_ids, enabled_ids))
+    errors = []
     if not identity_ok:
-        raise SystemExit("Pair row counts or (trk1Idx,trk2Idx) identities differ between baseline and enabled files")
+        errors.append("Pair row counts or (trk1Idx,trk2Idx) identities differ between baseline and enabled files")
     if enabled["bad_rows"]:
-        raise SystemExit("Detected " + str(enabled["bad_rows"]) + " invalid fit/table consistency checks")
+        errors.append("Detected " + str(enabled["bad_rows"]) + " invalid fit/table consistency checks")
     if base["events"] != enabled["events"]:
-        raise SystemExit("Event counts differ between baseline and enabled outputs")
+        errors.append("Event counts differ between baseline and enabled outputs")
     common = set(base_pair_columns) & set(enabled_pair_columns)
     if not common:
-        raise SystemExit("No common original pair columns found for baseline comparison")
+        errors.append("No common original pair columns found for baseline comparison")
+        common = set()
+    mismatches = []
     for branch in common:
         if base_pair_columns[branch] != enabled_pair_columns[branch]:
-            raise SystemExit("Original pair feature changed between runs: " + branch)
+            mismatches.append(branch)
+    enabled["original_pair_column_mismatches"] = len(mismatches)
     rows = []
     for label, values in (("baseline", base), ("enabled", enabled)):
         row = {"sample": label}
@@ -210,6 +220,15 @@ def main():
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+    if mismatches:
+        errors.extend("Original pair feature changed between runs: " + branch for branch in mismatches)
+    for label, values in (("baseline", base), ("enabled", enabled)):
+        for key, value in sorted(values.items()):
+            if key.startswith("check_") and value:
+                print(label + " " + key + ":", value)
+    if errors:
+        print("Validation CSV written despite failures:", args.csv)
+        raise SystemExit("; ".join(errors))
     print("Pair identities match for", base["events"], "events and", base["pairs"], "pairs")
     print("Enabled fit success:", enabled["success"], "/", enabled["attempts"])
     print("Enabled cumulative fit time (ms):", round(enabled["timing_fit_ms"], 3))
