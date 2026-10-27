@@ -12,7 +12,7 @@ except ImportError as exc:
     raise SystemExit("Run this script inside a CMSSW environment with PyROOT available") from exc
 
 
-PREFIX = "trackGVFeatures_trackPair_"
+PREFIX = "trackPair_"  # NanoAOD writes the FlatTable name, not its producer label, in branch names.
 FIT_FLOATS = [
     "vtxChi2", "vtxNdof", "vtxChi2Ndof", "vtxProb", "vtxX", "vtxY", "vtxZ",
     "vtxCovXX", "vtxCovXY", "vtxCovXZ", "vtxCovYY", "vtxCovYZ", "vtxCovZZ",
@@ -99,7 +99,10 @@ def collect(path, require_fit):
         checks[name] = checks.get(name, 0) + 1
     stats = {"events": int(tree.GetEntries()), "pairs": 0, "attempts": 0, "success": 0,
                            "failed": 0, "invalid_tracks": 0, "bad_rows": 0, "timing_fit_ms": 0.0,
-                           "timing_build_ms": 0.0, "timing_total_ms": 0.0}
+                           "timing_build_ms": 0.0, "timing_total_ms": 0.0,
+                           "minimumNormalizedCovarianceDiagonal": math.inf,
+                           "minimumNormalized2x2PrincipalMinor": math.inf,
+                           "minimumNormalizedCovarianceDeterminant": math.inf}
     for entry in tree:
         first, second = branch_values(tree, trk1_name), branch_values(tree, trk2_name)
         if len(first) != len(second):
@@ -155,10 +158,20 @@ def collect(path, require_fit):
                 yy, yz, zz = (float(columns[n][i]) for n in ("vtxCovYY", "vtxCovYZ", "vtxCovZZ"))
                 scale = max(abs(xx), abs(yy), abs(zz), 1e-30)
                 tol1, tol2, tol3 = 1e-10 * scale, 1e-10 * scale**2, 1e-10 * scale**3
+                minor2 = (xx * yy - xy * xy, xx * zz - xz * xz, yy * zz - yz * yz)
                 determinant = xx * yy * zz + 2 * xy * xz * yz - xx * yz**2 - yy * xz**2 - zz * xy**2
-                if xx < -tol1 or yy < -tol1 or zz < -tol1 or xx * yy - xy * xy < -tol2 or \
-                   xx * zz - xz * xz < -tol2 or yy * zz - yz * yz < -tol2 or determinant < -tol3:
-                    bad_check("covariance_not_positive_semidefinite_at_float_precision")
+                stats["minimumNormalizedCovarianceDiagonal"] = min(
+                    stats["minimumNormalizedCovarianceDiagonal"], xx / scale, yy / scale, zz / scale)
+                stats["minimumNormalized2x2PrincipalMinor"] = min(
+                    stats["minimumNormalized2x2PrincipalMinor"], *(value / scale**2 for value in minor2))
+                stats["minimumNormalizedCovarianceDeterminant"] = min(
+                    stats["minimumNormalizedCovarianceDeterminant"], determinant / scale**3)
+                if min(xx, yy, zz) < -tol1:
+                    bad_check("covariance_negative_diagonal")
+                if min(minor2) < -tol2:
+                    bad_check("covariance_negative_2x2_principal_minor")
+                if determinant < -tol3:
+                    bad_check("covariance_negative_determinant")
         sums = {name: branch_values(tree, branch) for name, branch in summary_names.items()}
         if any(len(values) != 1 for values in sums.values()):
             raise RuntimeError(path + ": expected singleton event summary rows")
@@ -170,6 +183,10 @@ def collect(path, require_fit):
         stats["timing_fit_ms"] += max(0.0, float(sums["vertexFitMs"][0]))
         stats["timing_total_ms"] += max(0.0, float(sums["producerTotalMs"][0]))
     f.Close()
+    for key in ("minimumNormalizedCovarianceDiagonal", "minimumNormalized2x2PrincipalMinor",
+                "minimumNormalizedCovarianceDeterminant"):
+        if math.isinf(stats[key]):
+            stats[key] = -1.0
     stats["bad_rows"] = sum(checks.values())
     for name, count in checks.items():
         stats["check_" + name] = count
