@@ -125,21 +125,22 @@ public:
       // A CachingVertex can be marked valid while its covariance is numerically
       // indefinite. Keep the fit position/quality and raw matrix for diagnosis,
       // but gate covariance-dependent uncertainties with this separate flag.
-      const double covarianceScale = std::max({std::abs(cov(0, 0)), std::abs(cov(1, 1)),
-                                               std::abs(cov(2, 2)), 1.e-30});
+      // Validate the values that will actually be serialized in the float
+      // NanoAOD branches, so this mask agrees with downstream ROOT checks.
+      const double covXX = out.covariance[0], covXY = out.covariance[1], covXZ = out.covariance[2];
+      const double covYY = out.covariance[3], covYZ = out.covariance[4], covZZ = out.covariance[5];
+      const double covarianceScale = std::max({std::abs(covXX), std::abs(covYY),
+                                               std::abs(covZZ), 1.e-30});
       const double tolerance1 = 1.e-10 * covarianceScale;
       const double tolerance2 = 1.e-10 * covarianceScale * covarianceScale;
       const double tolerance3 = tolerance2 * covarianceScale;
-      const double minorXY = cov(0, 0) * cov(1, 1) - cov(0, 1) * cov(0, 1);
-      const double minorXZ = cov(0, 0) * cov(2, 2) - cov(0, 2) * cov(0, 2);
-      const double minorYZ = cov(1, 1) * cov(2, 2) - cov(1, 2) * cov(1, 2);
-      const double determinant = cov(0, 0) * cov(1, 1) * cov(2, 2) +
-                                 2. * cov(0, 1) * cov(0, 2) * cov(1, 2) -
-                                 cov(0, 0) * cov(1, 2) * cov(1, 2) -
-                                 cov(1, 1) * cov(0, 2) * cov(0, 2) -
-                                 cov(2, 2) * cov(0, 1) * cov(0, 1);
-      out.covarianceValid = cov(0, 0) >= 0. && cov(1, 1) >= 0. &&
-                            cov(2, 2) >= 0. && minorXY >= -tolerance2 &&
+      const double minorXY = covXX * covYY - covXY * covXY;
+      const double minorXZ = covXX * covZZ - covXZ * covXZ;
+      const double minorYZ = covYY * covZZ - covYZ * covYZ;
+      const double determinant = covXX * covYY * covZZ + 2. * covXY * covXZ * covYZ -
+                                 covXX * covYZ * covYZ - covYY * covXZ * covXZ - covZZ * covXY * covXY;
+      out.covarianceValid = covXX >= 0. && covYY >= 0. &&
+                            covZZ >= 0. && minorXY >= -tolerance2 &&
                             minorXZ >= -tolerance2 && minorYZ >= -tolerance2 &&
                             determinant >= -tolerance3;
 

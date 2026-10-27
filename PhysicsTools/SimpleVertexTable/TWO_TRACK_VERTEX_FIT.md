@@ -46,7 +46,8 @@ are retained for diagnosis, `vtxCovarianceValid` is 0, and covariance-dependent
 displacement uncertainties/significances are marked invalid. Position-only
 pointing cosines may remain valid. The covariance check requires nonnegative
 diagonal elements and checks all principal minors/determinant with a relative
-`1e-10` tolerance.
+`1e-10` tolerance on the float values that are serialized to NanoAOD, so the
+mask matches downstream validation of the stored branches.
 
 Position is in cm; covariance in cm^2; uncertainties and displacement values
 in cm. Fit outputs are `vtxChi2`, `vtxNdof`, `vtxChi2Ndof`, `vtxProb`, `vtxX`,
