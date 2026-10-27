@@ -79,6 +79,7 @@ def collect(path, require_fit):
     names = {b.GetName() for b in tree.GetListOfBranches()}
     trk1_name = find_branch(tree, "trk1Idx")
     trk2_name = find_branch(tree, "trk2Idx")
+    pair_prefix = trk1_name[:-len("trk1Idx")]
     fit_names = {}
     if require_fit:
         missing = [name for name in FIT_BRANCHES if not any(branch.endswith("_" + name) for branch in names)]
@@ -94,7 +95,7 @@ def collect(path, require_fit):
                 raise RuntimeError(path + " missing or ambiguous vertexFitSummary_" + name + ": " + repr(matches))
             summary_names[name] = matches[0]
 
-    pair_ids, original_pair_columns, checks = [], {}, {}
+    pair_ids, original_pair_columns, checks, covariance_examples = [], {}, {}, []
     def bad_check(name):
         checks[name] = checks.get(name, 0) + 1
     stats = {"events": int(tree.GetEntries()), "pairs": 0, "attempts": 0, "success": 0,
@@ -110,8 +111,10 @@ def collect(path, require_fit):
         pairs = list(zip(map(int, first), map(int, second)))
         pair_ids.append(pairs)
         for branch in names:
-            if branch.startswith(PREFIX) and not any(branch.endswith("_" + suffix) for suffix in FIT_BRANCHES):
-                original_pair_columns.setdefault(branch, []).append(branch_values(tree, branch))
+            if branch.startswith(pair_prefix):
+                column = branch[len(pair_prefix):]
+                if column not in FIT_BRANCHES:
+                    original_pair_columns.setdefault(column, []).append(branch_values(tree, branch))
         stats["pairs"] += len(pairs)
         if not require_fit:
             continue
@@ -160,18 +163,30 @@ def collect(path, require_fit):
                 tol1, tol2, tol3 = 1e-10 * scale, 1e-10 * scale**2, 1e-10 * scale**3
                 minor2 = (xx * yy - xy * xy, xx * zz - xz * xz, yy * zz - yz * yz)
                 determinant = xx * yy * zz + 2 * xy * xz * yz - xx * yz**2 - yy * xz**2 - zz * xy**2
+                bad_diagonal = min(xx, yy, zz) < -tol1
+                bad_minor2 = min(minor2) < -tol2
+                bad_determinant = determinant < -tol3
                 stats["minimumNormalizedCovarianceDiagonal"] = min(
                     stats["minimumNormalizedCovarianceDiagonal"], xx / scale, yy / scale, zz / scale)
                 stats["minimumNormalized2x2PrincipalMinor"] = min(
                     stats["minimumNormalized2x2PrincipalMinor"], *(value / scale**2 for value in minor2))
                 stats["minimumNormalizedCovarianceDeterminant"] = min(
                     stats["minimumNormalizedCovarianceDeterminant"], determinant / scale**3)
-                if min(xx, yy, zz) < -tol1:
+                if bad_diagonal:
                     bad_check("covariance_negative_diagonal")
-                if min(minor2) < -tol2:
+                if bad_minor2:
                     bad_check("covariance_negative_2x2_principal_minor")
-                if determinant < -tol3:
+                if bad_determinant:
                     bad_check("covariance_negative_determinant")
+                if (bad_diagonal or bad_minor2 or bad_determinant) and len(covariance_examples) < 5:
+                    covariance_examples.append({
+                        "event": len(pair_ids) - 1, "pairRow": i,
+                        "trk1Idx": pairs[i][0], "trk2Idx": pairs[i][1],
+                        "covXX": xx, "covXY": xy, "covXZ": xz,
+                        "covYY": yy, "covYZ": yz, "covZZ": zz,
+                        "normalized2x2Min": min(minor2) / scale**2,
+                        "normalizedDeterminant": determinant / scale**3,
+                    })
         sums = {name: branch_values(tree, branch) for name, branch in summary_names.items()}
         if any(len(values) != 1 for values in sums.values()):
             raise RuntimeError(path + ": expected singleton event summary rows")
@@ -190,6 +205,7 @@ def collect(path, require_fit):
     stats["bad_rows"] = sum(checks.values())
     for name, count in checks.items():
         stats["check_" + name] = count
+    stats["covariance_examples"] = covariance_examples
     return pair_ids, original_pair_columns, stats
 
 
@@ -243,6 +259,8 @@ def main():
         for key, value in sorted(values.items()):
             if key.startswith("check_") and value:
                 print(label + " " + key + ":", value)
+    for example in enabled.get("covariance_examples", []):
+        print("Representative non-PSD covariance:", example)
     if errors:
         print("Validation CSV written despite failures:", args.csv)
         raise SystemExit("; ".join(errors))
