@@ -73,10 +73,13 @@ def validate(path, baseline=None):
         tp_a = find(tree, "trk1Idx", prefix="trackPair", required=False)
         tp_b = find(tree, "trk2Idx", prefix="trackPair", required=False)
         tp_fit = {}
-        for name in ("vtxX", "vtxY", "vtxZ", "vtxChi2", "vtxProb", "vtxCovXX", "vtxCovYY", "vtxCovZZ"):
+        required_tp_fit = ("vtxX", "vtxY", "vtxZ", "vtxChi2", "vtxProb", "vtxCovXX", "vtxCovYY", "vtxCovZZ")
+        for name in required_tp_fit:
             branch = find(tree, name, prefix="trackPair", required=False)
             if branch:
                 tp_fit[name] = ak.to_list(tree[branch].array(library="ak"))
+        require(set(tp_fit) == set(required_tp_fit),
+                "trackPair is missing one or more expected two-track fit branches", errors)
         tp_endpoints = None
         if tp_a and tp_b:
             aa, bb = ak.to_list(tree[tp_a].array(library="ak")), ak.to_list(tree[tp_b].array(library="ak"))
@@ -102,7 +105,10 @@ def validate(path, baseline=None):
                 require(igen == -1 or 0 <= igen < len(n_gen[ie]), "QTruthMatchedTrack has out-of-range QGenCharged reference in event %d" % ie, errors)
             require(len(had_ids) == len(hgroups["hadronIdx"][ie]), "duplicate QTruthMatchedHadron row in event %d" % ie, errors)
             for j, ih in enumerate(hgroups["hadronIdx"][ie]):
-                require(0 <= ih < nh and hgroups["qTrainHadronIdx"][ie][j] == ih, "invalid hadron/QTrainHadron map in event %d" % ie, errors)
+                valid_hadron = 0 <= ih < nh
+                require(valid_hadron and hgroups["qTrainHadronIdx"][ie][j] == ih, "invalid hadron/QTrainHadron map in event %d" % ie, errors)
+                if not valid_hadron:
+                    continue
                 require(had["hadronIdx"][ie][ih] == ih and ih in original_map, "QHadron/QTrainHadron row mapping mismatch in event %d" % ie, errors)
                 members = [k for k, hidx in enumerate(tracks["hadronIdx"][ie]) if hidx == ih]
                 counts["matched_tracks"] += len(members)
@@ -112,8 +118,13 @@ def validate(path, baseline=None):
                 a, b, ih = pairs["trackIdx1"][ie][j], pairs["trackIdx2"][ie][j], pairs["hadronIdx"][ie][j]
                 key = (ih, min(a, b), max(a, b))
                 require(key not in seen, "duplicate hadron-specific track pair %r event %d" % (key, ie), errors); seen.add(key)
-                require(a in track_ids and b in track_ids and a != b, "pair endpoint out of range in event %d" % ie, errors)
-                require(ih in had_ids and pairs["qTrainHadronIdx"][ie][j] == ih, "pair has invalid hadron row in event %d" % ie, errors)
+                valid_hadron = 0 <= ih < nh
+                valid_endpoints = a in track_ids and b in track_ids and a != b
+                require(valid_endpoints, "pair endpoint out of range in event %d" % ie, errors)
+                require(valid_hadron and ih in had_ids and pairs["qTrainHadronIdx"][ie][j] == ih,
+                        "pair has invalid hadron row in event %d" % ie, errors)
+                if not valid_hadron or not valid_endpoints:
+                    continue
                 ta, tb = track_pos.get(a), track_pos.get(b)
                 if ta is not None and tb is not None:
                     require(tracks["hadronIdx"][ie][ta] == ih and tracks["hadronIdx"][ie][tb] == ih,
@@ -142,9 +153,14 @@ def validate(path, baseline=None):
                     require(pairs["passedOrdinaryPairSelection"][ie][j] and row >= 0,
                             "fit reuse flag without selected-pair reference in event %d" % ie, errors)
                     require(bool(tp_fit), "fit reuse flag set but trackPair fit branches are absent", errors)
-                    for name in tp_fit:
-                        require(abs(pairs["vtx" + name[3:]][ie][j] - tp_fit[name][ie][row]) < 1.e-5,
-                                "reused %s differs from trackPair in event %d" % (name, ie), errors)
+                    valid_pair_row = tp_endpoints is not None and 0 <= row < len(tp_endpoints[ie])
+                    valid_fit_row = valid_pair_row and all(row < len(tp_fit[name][ie]) for name in tp_fit)
+                    if not valid_fit_row:
+                        require(False, "fit reuse trackPairIdx out of range in event %d" % ie, errors)
+                    else:
+                        for name in tp_fit:
+                            require(abs(pairs["vtx" + name[3:]][ie][j] - tp_fit[name][ie][row]) < 1.e-5,
+                                    "reused %s differs from trackPair in event %d" % (name, ie), errors)
                 if pairs["vtxFitValid"][ie][j]:
                     counts["fit_valid"] += 1
                     require(all(math.isfinite(pairs[k][ie][j]) for k in ("vtxX", "vtxY", "vtxZ")), "valid fit has nonfinite vertex in event %d" % ie, errors)
