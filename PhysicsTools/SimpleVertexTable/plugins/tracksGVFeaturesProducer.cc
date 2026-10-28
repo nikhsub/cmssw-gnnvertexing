@@ -22,11 +22,13 @@ TrackGVFeaturesProducer::TrackGVFeaturesProducer(const edm::ParameterSet& iConfi
       relPtMatchMax_(iConfig.getParameter<double>("relPtMatchMax")),
       enableTwoTrackVertexFit_(iConfig.getParameter<bool>("enableTwoTrackVertexFit")),
       enableVertexFitTiming_(iConfig.getParameter<bool>("enableVertexFitTiming")),
+      enableTruthMatchedPairFit_(iConfig.existsAs<bool>("enableTruthMatchedPairFit") ? iConfig.getParameter<bool>("enableTruthMatchedPairFit") : false),
       twoTrackVertexFitter_(enableTwoTrackVertexFit_ ? std::make_unique<TwoTrackVertexFitter>() : nullptr)
 {
     produces<nanoaod::FlatTable>("track");      // extension of trackTable
     produces<nanoaod::FlatTable>("trackPair");  // standalone edge table
     if (enableTwoTrackVertexFit_) produces<nanoaod::FlatTable>("vertexFitSummary");
+    if (enableTruthMatchedPairFit_) produces<std::vector<reco::TransientTrack>>("transientTracks");
     //produces<nanoaod::FlatTable>("GV");         // extension of GenVertexProducer's GV table
 }
 
@@ -380,6 +382,11 @@ void TrackGVFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetup&
         summary->addColumn<float>("producerTotalMs", totalMs, "Producer wall time; -1 when timing disabled");
         iEvent.put(std::move(summary), "vertexFitSummary");
     }
+
+    // Share the event-local transient-track construction with the optional
+    // MC truth-pair fitter, avoiding a second builder pass over all tracks.
+    if (enableTruthMatchedPairFit_)
+        iEvent.put(std::make_unique<std::vector<reco::TransientTrack>>(std::move(t_trks)), "transientTracks");
 
 
 }

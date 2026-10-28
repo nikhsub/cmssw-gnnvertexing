@@ -44,6 +44,7 @@ private:
     double dlenSigMin_;
     bool enableTwoTrackVertexFit_;
     bool enableVertexFitTiming_;
+    bool enableTruthMatchedPairFit_;
     std::unique_ptr<TwoTrackVertexFitter> twoTrackVertexFitter_;
 };
 #endif

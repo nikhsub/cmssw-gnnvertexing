@@ -62,7 +62,8 @@ public:
         quarkToken_(consumes<nanoaod::FlatTable>(cfg.getParameter<edm::InputTag>("quarkTable"))),
         legacyHadronToken_(consumes<nanoaod::FlatTable>(cfg.getParameter<edm::InputTag>("legacyHadronTable"))),
         pairToken_(consumes<nanoaod::FlatTable>(cfg.getParameter<edm::InputTag>("pairTable"))),
-        produceFullValidationTables_(cfg.getParameter<bool>("produceFullValidationTables")) {
+        produceFullValidationTables_(cfg.getParameter<bool>("produceFullValidationTables")),
+        saveFragmentationObservables_(cfg.getUntrackedParameter<bool>("saveFragmentationObservables", true)) {
     if (produceFullValidationTables_) {
       produces<nanoaod::FlatTable>("QGNNTrack");
       produces<nanoaod::FlatTable>("QGNNPairTruth");
@@ -105,11 +106,17 @@ public:
     const auto hQuarkIdx = column<int>(hadrons, "quarkIdx");
     const auto hAssocQuality = column<int>(hadrons, "associationQuality");
     const auto hSourceCertain = column<int>(hadrons, "fragmentationSourceCertain");
-    const auto hPreHadPt = column<float>(hadrons, "preHadPt");
-    const auto hPreHadEta = column<float>(hadrons, "preHadEta");
-    const auto hPreHadPhi = column<float>(hadrons, "preHadPhi");
-    const auto hPreHadValid = column<int>(hadrons, "preHadKinematicsValid");
+    std::span<const float> hPreHadPt,hPreHadEta,hPreHadPhi;
+    std::span<const int> hPreHadValid;
+    if (saveFragmentationObservables_) {
+      hPreHadPt = column<float>(hadrons, "preHadPt");
+      hPreHadEta = column<float>(hadrons, "preHadEta");
+      hPreHadPhi = column<float>(hadrons, "preHadPhi");
+      hPreHadValid = column<int>(hadrons, "preHadKinematicsValid");
+    }
     const auto qPdgId = column<int>(quarks, "pdgId");
+    const auto qPx = column<float>(quarks, "px"), qPy = column<float>(quarks, "py"), qPz = column<float>(quarks, "pz"), qEnergy = column<float>(quarks, "energy");
+    const auto qOriginCategory = column<int>(quarks, "originCategory"), qOriginValid = column<int>(quarks, "originCategoryValid");
     const auto legacyPdgId = column<int>(legacyHadrons, "Hadron_pdgId");
     const auto legacyIsB = column<int>(legacyHadrons, "isB");
     const auto legacyIsD = column<int>(legacyHadrons, "isD");
@@ -123,8 +130,9 @@ public:
         gSourceCertain.size() != nGen || hPdgId.size() != nHadrons || hCharmOrigin.size() != nHadrons ||
         hPt.size() != nHadrons || hEta.size() != nHadrons || hPhi.size() != nHadrons ||
         hParentBIdx.size() != nHadrons || hQuarkIdx.size() != nHadrons || hAssocQuality.size() != nHadrons || hSourceCertain.size() != nHadrons ||
-        hPreHadPt.size() != nHadrons || hPreHadEta.size() != nHadrons || hPreHadPhi.size() != nHadrons || hPreHadValid.size() != nHadrons ||
-        qPdgId.size() != nQuarks || legacyPdgId.size() != legacyHadrons.nRows() ||
+        (saveFragmentationObservables_ && (hPreHadPt.size() != nHadrons || hPreHadEta.size() != nHadrons || hPreHadPhi.size() != nHadrons || hPreHadValid.size() != nHadrons)) ||
+        qPdgId.size() != nQuarks || qPx.size() != nQuarks || qPy.size() != nQuarks || qPz.size() != nQuarks || qEnergy.size() != nQuarks ||
+        qOriginCategory.size() != nQuarks || qOriginValid.size() != nQuarks || legacyPdgId.size() != legacyHadrons.nRows() ||
         legacyIsB.size() != legacyHadrons.nRows() || legacyIsD.size() != legacyHadrons.nRows() ||
         legacyFromHF.size() != legacyHadrons.nRows() ||
         edgeSrc.size() != nPairs || edgeDst.size() != nPairs)
@@ -297,22 +305,23 @@ public:
     trainHadParentB.reserve(nHadrons); trainHadQuarkIdx.reserve(nHadrons); trainHadAssocQuality.reserve(nHadrons);
     trainHadSourceCertain.reserve(nHadrons); trainHadPreValid.reserve(nHadrons);
     trainHadPt.reserve(nHadrons); trainHadEta.reserve(nHadrons); trainHadPhi.reserve(nHadrons);
-    trainHadPrePt.reserve(nHadrons); trainHadPreEta.reserve(nHadrons); trainHadPrePhi.reserve(nHadrons);
+    if (saveFragmentationObservables_) { trainHadPrePt.reserve(nHadrons); trainHadPreEta.reserve(nHadrons); trainHadPrePhi.reserve(nHadrons); }
     constexpr double pi = 3.14159265358979323846;
     for (size_t ih = 0; ih < nHadrons; ++ih) {
       const int iq = hQuarkIdx[ih];
       const bool validQ = iq >= 0 && static_cast<size_t>(iq) < nQuarks;
-      const bool validAncestry = validQ && hPreHadValid[ih] == 1 && hAssocQuality[ih] == 1;
-      const bool isD = isDHadron(hPdgId[ih]);
-      const bool isB = isBHadron(hPdgId[ih]);
-      const bool dInputsEligible = isD && validAncestry;
-      const bool bInputsEligible = isB && validAncestry && hSourceCertain[ih] == 1 && std::abs(qPdgId[iq]) == 5;
-      bool finiteInputs = dInputsEligible || bInputsEligible;
-      const double pdPt = hPt[ih], pdEta = hEta[ih], pdPhi = hPhi[ih];
-      const double pqPt = hPreHadPt[ih], pqEta = hPreHadEta[ih], pqPhi = hPreHadPhi[ih];
-      finiteInputs = finiteInputs && std::isfinite(pdPt) && std::isfinite(pdEta) && std::isfinite(pdPhi) &&
-                     std::isfinite(pqPt) && std::isfinite(pqEta) && std::isfinite(pqPhi) && pdPt > 0. && pqPt > 0.;
-      if (finiteInputs) {
+      if (saveFragmentationObservables_) {
+        const bool validAncestry = validQ && hPreHadValid[ih] == 1 && hAssocQuality[ih] == 1;
+        const bool isD = isDHadron(hPdgId[ih]);
+        const bool isB = isBHadron(hPdgId[ih]);
+        const bool dInputsEligible = isD && validAncestry;
+        const bool bInputsEligible = isB && validAncestry && hSourceCertain[ih] == 1 && std::abs(qPdgId[iq]) == 5;
+        bool finiteInputs = dInputsEligible || bInputsEligible;
+        const double pdPt = hPt[ih], pdEta = hEta[ih], pdPhi = hPhi[ih];
+        const double pqPt = hPreHadPt[ih], pqEta = hPreHadEta[ih], pqPhi = hPreHadPhi[ih];
+        finiteInputs = finiteInputs && std::isfinite(pdPt) && std::isfinite(pdEta) && std::isfinite(pdPhi) &&
+                       std::isfinite(pqPt) && std::isfinite(pqEta) && std::isfinite(pqPhi) && pdPt > 0. && pqPt > 0.;
+        if (finiteInputs) {
         const double pdx = pdPt * std::cos(pdPhi), pdy = pdPt * std::sin(pdPhi), pdz = pdPt * std::sinh(pdEta);
         const double pqx = pqPt * std::cos(pqPhi), pqy = pqPt * std::sin(pqPhi), pqz = pqPt * std::sinh(pqEta);
         const double q2 = pqx*pqx + pqy*pqy + pqz*pqz, qnorm = std::sqrt(q2);
@@ -333,13 +342,17 @@ public:
           }
           if (bInputsEligible) bFragmentationTargetValid[ih] = 1;
         }
+        }
       }
       trainHadIdx.push_back(static_cast<int>(ih)); trainHadPdg.push_back(hPdgId[ih]);
       trainHadCharmOrigin.push_back(hCharmOrigin[ih]); trainHadParentB.push_back(hParentBIdx[ih]);
       trainHadQuarkIdx.push_back(validQ ? iq : -1); trainHadAssocQuality.push_back(hAssocQuality[ih]);
-      trainHadSourceCertain.push_back(hSourceCertain[ih]); trainHadPreValid.push_back(hPreHadValid[ih]);
+      trainHadSourceCertain.push_back(hSourceCertain[ih]);
       trainHadPt.push_back(hPt[ih]); trainHadEta.push_back(hEta[ih]); trainHadPhi.push_back(hPhi[ih]);
-      trainHadPrePt.push_back(hPreHadPt[ih]); trainHadPreEta.push_back(hPreHadEta[ih]); trainHadPrePhi.push_back(hPreHadPhi[ih]);
+      if (saveFragmentationObservables_) {
+        trainHadPreValid.push_back(hPreHadValid[ih]);
+        trainHadPrePt.push_back(hPreHadPt[ih]); trainHadPreEta.push_back(hPreHadEta[ih]); trainHadPrePhi.push_back(hPreHadPhi[ih]);
+      }
     }
     auto trainHadronTable = std::make_unique<nanoaod::FlatTable>(nHadrons, "QTrainHadron", false, false);
     trainHadronTable->addColumn<int>("hadronIdx", trainHadIdx, "event-local row; QTrainTrack.hadronIdx references this table");
@@ -352,27 +365,79 @@ public:
     trainHadronTable->addColumn<int>("quarkIdx", trainHadQuarkIdx, "QTrainQuark row, or -1");
     trainHadronTable->addColumn<int>("associationQuality", trainHadAssocQuality, "hadron-to-quark ancestry quality");
     trainHadronTable->addColumn<int>("fragmentationSourceCertain", trainHadSourceCertain, "physical fragmentation-source certainty");
-    trainHadronTable->addColumn<float>("preHadPt", trainHadPrePt, "pre-hadronization quark proxy pT [GeV]");
-    trainHadronTable->addColumn<float>("preHadEta", trainHadPreEta, "pre-hadronization quark proxy eta");
-    trainHadronTable->addColumn<float>("preHadPhi", trainHadPrePhi, "pre-hadronization quark proxy phi [rad]");
-    trainHadronTable->addColumn<int>("preHadKinematicsValid", trainHadPreValid, "pre-hadronization kinematics-valid flag");
     trainHadronTable->addColumn<int>("nAcceptedDecayTracks", hadN, "matched heavy-decay tracks with pT>=0.4 GeV and |eta|<=2.5");
     trainHadronTable->addColumn<int>("nCategory", hadCategory, "0=N0, 1=N1, 2=N2, 3=N3+");
-    trainHadronTable->addColumn<float>("zProj", zProj, "dot(pH,pQ)/|pQ|^2; D or B training-only target, NaN when unavailable");
-    trainHadronTable->addColumn<float>("zT", zT, "pT(H)/pT(pre-hadronization quark); D or B target, NaN when unavailable");
-    trainHadronTable->addColumn<float>("deltaR_DQuark", deltaR, "deltaR(H, pre-hadronization quark) for D or B, NaN when unavailable");
-    trainHadronTable->addColumn<float>("kTrel", kTrel, "|pH cross pQ|/|pQ| [GeV]; D or B target, NaN when unavailable");
-    trainHadronTable->addColumn<int>("observableInputsValid", auxInputsValid, "D-only observable-input mask, preserved for compatibility");
-    trainHadronTable->addColumn<int>("auxiliaryTargetValid", auxPromptValid, "prompt D + unique charm QFrag + valid finite pre-hadronization momentum");
-    trainHadronTable->addColumn<int>("bFragmentationTargetValid", bFragmentationTargetValid, "B + unique |pdgId|=5 QFrag + source-certain association + valid finite nonzero proxy kinematics");
+    if (saveFragmentationObservables_) {
+      trainHadronTable->addColumn<float>("preHadPt", trainHadPrePt, "pre-hadronization quark proxy pT [GeV]");
+      trainHadronTable->addColumn<float>("preHadEta", trainHadPreEta, "pre-hadronization quark proxy eta");
+      trainHadronTable->addColumn<float>("preHadPhi", trainHadPrePhi, "pre-hadronization quark proxy phi [rad]");
+      trainHadronTable->addColumn<int>("preHadKinematicsValid", trainHadPreValid, "pre-hadronization kinematics-valid flag");
+      trainHadronTable->addColumn<float>("zProj", zProj, "dot(pH,pQ)/|pQ|^2; D or B training-only target, NaN when unavailable");
+      trainHadronTable->addColumn<float>("zT", zT, "pT(H)/pT(pre-hadronization quark); D or B target, NaN when unavailable");
+      trainHadronTable->addColumn<float>("deltaR_DQuark", deltaR, "deltaR(H, pre-hadronization quark) for D or B, NaN when unavailable");
+      trainHadronTable->addColumn<float>("kTrel", kTrel, "|pH cross pQ|/|pQ| [GeV]; D or B target, NaN when unavailable");
+      trainHadronTable->addColumn<int>("observableInputsValid", auxInputsValid, "D-only observable-input mask, preserved for compatibility");
+      trainHadronTable->addColumn<int>("auxiliaryTargetValid", auxPromptValid, "prompt D + unique charm QFrag + valid finite pre-hadronization momentum");
+      trainHadronTable->addColumn<int>("bFragmentationTargetValid", bFragmentationTargetValid, "B + unique |pdgId|=5 QFrag + source-certain association + valid finite nonzero proxy kinematics");
+    }
+    const auto copyHadronFloat = [&](const std::string& name) {
+      const auto values = column<float>(hadrons, name);
+      return std::vector<float>(values.begin(), values.end());
+    };
+    const int generatorKinematicsColumn = hadrons.columnIndex("p");
+    if (generatorKinematicsColumn >= 0) {
+      trainHadronTable->addColumn<float>("p", copyHadronFloat("p"), "generator total momentum [GeV]");
+      trainHadronTable->addColumn<float>("px", copyHadronFloat("px"), "generator px [GeV]");
+      trainHadronTable->addColumn<float>("py", copyHadronFloat("py"), "generator py [GeV]");
+      trainHadronTable->addColumn<float>("pz", copyHadronFloat("pz"), "generator pz [GeV]");
+      trainHadronTable->addColumn<float>("energy", copyHadronFloat("energy"), "generator energy [GeV]");
+      for (const std::string name : {"status", "isPrompt", "isHardProcess", "statusFlagLastCopy"}) {
+        const auto values = column<int>(hadrons, name);
+        trainHadronTable->addColumn<int>(name, std::vector<int>(values.begin(), values.end()), "selected hadron generator status metadata");
+      }
+    }
+    const int prodXColumn = hadrons.columnIndex("prodX");
+    const int decayXColumn = hadrons.columnIndex("decayX");
+    if (generatorKinematicsColumn >= 0 && prodXColumn >= 0 && decayXColumn >= 0) {
+      const auto copyIntColumn = [&](const std::string& name) {
+        const auto values = column<int>(hadrons, name);
+        return std::vector<int>(values.begin(), values.end());
+      };
+      trainHadronTable->addColumn<float>("prodX", copyHadronFloat("prodX"), "generator hadron production x [cm]");
+      trainHadronTable->addColumn<float>("prodY", copyHadronFloat("prodY"), "generator hadron production y [cm]");
+      trainHadronTable->addColumn<float>("prodZ", copyHadronFloat("prodZ"), "generator hadron production z [cm]");
+      trainHadronTable->addColumn<int>("prodVertexValid", copyIntColumn("prodVertexValid"), "generator production-position validity");
+      trainHadronTable->addColumn<float>("decayX", copyHadronFloat("decayX"), "generator decay x [cm]");
+      trainHadronTable->addColumn<float>("decayY", copyHadronFloat("decayY"), "generator decay y [cm]");
+      trainHadronTable->addColumn<float>("decayZ", copyHadronFloat("decayZ"), "generator decay z [cm]");
+      trainHadronTable->addColumn<int>("decayVertexValid", copyIntColumn("decayVertexValid"), "generator decay-position validity");
+      trainHadronTable->addColumn<int>("decayVertexResolved", copyIntColumn("decayVertexResolved"), "decay position uniquely resolved from immediate daughter vertices");
+      trainHadronTable->addColumn<int>("decayVertexSource", copyIntColumn("decayVertexSource"), "1 immediate daughter production vertex");
+      if (hadrons.columnIndex("trueLxy") >= 0) {
+        trainHadronTable->addColumn<float>("trueLxy", copyHadronFloat("trueLxy"), "true transverse decay length [cm]");
+        trainHadronTable->addColumn<float>("trueL3D", copyHadronFloat("trueL3D"), "true 3D decay length [cm]");
+        trainHadronTable->addColumn<int>("trueDecayLengthValid", copyIntColumn("trueDecayLengthValid"), "true decay-length validity");
+        trainHadronTable->addColumn<float>("trueCt", copyHadronFloat("trueCt"), "projected true proper decay length [cm]");
+        trainHadronTable->addColumn<int>("trueCtValid", copyIntColumn("trueCtValid"), "true proper decay-length validity");
+      }
+    }
     event.put(std::move(trainHadronTable), "QTrainHadron");
 
-    std::vector<int> trainQuarkPdg;
+    std::vector<int> trainQuarkPdg, trainQuarkOrigin, trainQuarkOriginValid;
+    std::vector<float> trainQuarkPx, trainQuarkPy, trainQuarkPz, trainQuarkEnergy;
     for (size_t iq = 0; iq < nQuarks; ++iq) {
       trainQuarkPdg.push_back(qPdgId[iq]);
+      trainQuarkPx.push_back(qPx[iq]); trainQuarkPy.push_back(qPy[iq]); trainQuarkPz.push_back(qPz[iq]); trainQuarkEnergy.push_back(qEnergy[iq]);
+      trainQuarkOrigin.push_back(qOriginCategory[iq]); trainQuarkOriginValid.push_back(qOriginValid[iq]);
     }
     auto trainQuarkTable = std::make_unique<nanoaod::FlatTable>(nQuarks, "QTrainQuark", false, false);
     trainQuarkTable->addColumn<int>("pdgId", trainQuarkPdg, "signed pre-hadronization quark PDG identifier");
+    trainQuarkTable->addColumn<float>("px", trainQuarkPx, "pre-hadronization quark px [GeV]");
+    trainQuarkTable->addColumn<float>("py", trainQuarkPy, "pre-hadronization quark py [GeV]");
+    trainQuarkTable->addColumn<float>("pz", trainQuarkPz, "pre-hadronization quark pz [GeV]");
+    trainQuarkTable->addColumn<float>("energy", trainQuarkEnergy, "pre-hadronization quark energy [GeV]");
+    trainQuarkTable->addColumn<int>("originCategory", trainQuarkOrigin, "0 unavailable/ambiguous hard-copy ancestry, 1 unique hard-process copy retained");
+    trainQuarkTable->addColumn<int>("originCategoryValid", trainQuarkOriginValid, "origin-category validity mask");
     event.put(std::move(trainQuarkTable), "QTrainQuark");
 
     std::vector<int> legacyHadIdx, legacyPdg, legacyB, legacyD, legacyHF;
@@ -420,6 +485,7 @@ public:
 private:
   edm::EDGetTokenT<nanoaod::FlatTable> recoToken_, chargedToken_, hadronToken_, quarkToken_, legacyHadronToken_, pairToken_;
   bool produceFullValidationTables_;
+  bool saveFragmentationObservables_;
 };
 
 DEFINE_FWK_MODULE(QuarkAssociationGNNTableProducer);

@@ -14,6 +14,7 @@
 #include "DataFormats/Math/interface/deltaR.h"
 
 #include <cmath>
+#include <array>
 #include <functional>
 #include <limits>
 #include <queue>
@@ -131,7 +132,11 @@ class QuarkFragmentationProducer : public edm::stream::EDProducer<> {
 public:
   explicit QuarkFragmentationProducer(const edm::ParameterSet& cfg)
       : prunedToken_(consumes<reco::GenParticleCollection>(cfg.getParameter<edm::InputTag>("prunedGenParticles"))),
-        packedToken_(consumes<pat::PackedGenParticleCollection>(cfg.getParameter<edm::InputTag>("packedGenParticles"))) {
+        packedToken_(consumes<pat::PackedGenParticleCollection>(cfg.getParameter<edm::InputTag>("packedGenParticles"))),
+        saveDecayVertexTruth_(cfg.getUntrackedParameter<bool>("saveDecayVertexTruth", false)),
+        saveFragmentationObservables_(cfg.getUntrackedParameter<bool>("saveFragmentationObservables", true)),
+        minimalQuarkTruth_(cfg.getUntrackedParameter<bool>("minimalQuarkTruth", false)),
+        saveDerivedDecayTruth_(cfg.getUntrackedParameter<bool>("saveDerivedDecayTruth", true)) {
     produces<nanoaod::FlatTable>("QFragTable");
     produces<nanoaod::FlatTable>("QHadronTable");
     produces<nanoaod::FlatTable>("QGenChargedTable");
@@ -147,6 +152,10 @@ private:
                                     const std::unordered_map<const reco::Candidate*, int>& lookup) const;
   edm::EDGetTokenT<reco::GenParticleCollection> prunedToken_;
   edm::EDGetTokenT<pat::PackedGenParticleCollection> packedToken_;
+  bool saveDecayVertexTruth_;
+  bool saveFragmentationObservables_;
+  bool minimalQuarkTruth_;
+  bool saveDerivedDecayTruth_;
 };
 
 Ancestors QuarkFragmentationProducer::ancestors(
@@ -638,11 +647,13 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   }
 
   auto qTable = std::make_unique<nanoaod::FlatTable>(qRep.size(), "QFrag", false, false);
-  std::vector<int> qPdg;
-  std::vector<float> qPt, qEta, qPhi, qMass, qHardPt, qHardEta, qHardPhi;
+  std::vector<int> qPdg, qOriginCategory, qOriginValid;
+  std::vector<float> qPt, qEta, qPhi, qMass, qPx, qPy, qPz, qEnergy, qHardPt, qHardEta, qHardPhi;
   for (size_t iq = 0; iq < qRep.size(); ++iq) {
     const auto& q = (*pruned)[qRep[iq]];
     qPdg.push_back(q.pdgId()); qPt.push_back(q.pt()); qEta.push_back(q.eta()); qPhi.push_back(q.phi()); qMass.push_back(q.mass());
+    qPx.push_back(q.px()); qPy.push_back(q.py()); qPz.push_back(q.pz()); qEnergy.push_back(q.energy());
+    qOriginCategory.push_back(qHard[iq] >= 0 ? 1 : 0); qOriginValid.push_back(qHard[iq] >= 0 ? 1 : 0);
     if (qHard[iq] >= 0) {
       const auto& hard = (*pruned)[qHard[iq]];
       qHardPt.push_back(hard.pt()); qHardEta.push_back(hard.eta()); qHardPhi.push_back(hard.phi());
@@ -651,22 +662,76 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
     }
   }
   qTable->addColumn<int>("pdgId", qPdg, "signed PDG identifier");
-  qTable->addColumn<int>("prunedGenIdx", qRep, "representative terminal index in prunedGenParticles");
-  qTable->addColumn<float>("pt", qPt, "representative transverse momentum [GeV]");
-  qTable->addColumn<float>("eta", qEta, "representative pseudorapidity");
-  qTable->addColumn<float>("phi", qPhi, "representative azimuth [rad]");
-  qTable->addColumn<float>("mass", qMass, "representative invariant mass [GeV]");
-  qTable->addColumn<int>("hardPrunedIdx", qHard, "unique hard-process copy index in prunedGenParticles, or -1");
-  qTable->addColumn<float>("hardPt", qHardPt, "hard-copy transverse momentum [GeV], or -999");
-  qTable->addColumn<float>("hardEta", qHardEta, "hard-copy pseudorapidity, or -999");
-  qTable->addColumn<float>("hardPhi", qHardPhi, "hard-copy azimuth [rad], or -999");
+  qTable->addColumn<float>("px", qPx, "representative quark px [GeV]");
+  qTable->addColumn<float>("py", qPy, "representative quark py [GeV]");
+  qTable->addColumn<float>("pz", qPz, "representative quark pz [GeV]");
+  qTable->addColumn<float>("energy", qEnergy, "representative quark energy [GeV]");
+  qTable->addColumn<int>("originCategory", qOriginCategory, "0 unavailable/ambiguous hard-copy ancestry, 1 unique hard-process copy retained");
+  qTable->addColumn<int>("originCategoryValid", qOriginValid, "1 when exactly one hard-process copy is retained in the connected quark-copy component");
+  if (!minimalQuarkTruth_) {
+    qTable->addColumn<int>("prunedGenIdx", qRep, "representative terminal index in prunedGenParticles");
+    qTable->addColumn<float>("pt", qPt, "representative transverse momentum [GeV]");
+    qTable->addColumn<float>("eta", qEta, "representative pseudorapidity");
+    qTable->addColumn<float>("phi", qPhi, "representative azimuth [rad]");
+    qTable->addColumn<float>("mass", qMass, "representative mass [GeV]");
+    qTable->addColumn<int>("hardPrunedIdx", qHard, "unique hard-process copy index in prunedGenParticles, or -1");
+    qTable->addColumn<float>("hardPt", qHardPt, "hard-copy transverse momentum [GeV], or -999");
+    qTable->addColumn<float>("hardEta", qHardEta, "hard-copy pseudorapidity, or -999");
+    qTable->addColumn<float>("hardPhi", qHardPhi, "hard-copy azimuth [rad], or -999");
+  }
 
   auto hTable = std::make_unique<nanoaod::FlatTable>(hPruned.size(), "QHadron", false, false);
-  std::vector<int> hPdg;
-  std::vector<float> hPt, hEta, hPhi, hMass;
+  std::vector<int> hIndex,hPdg,hStatus,hIsPrompt,hIsHardProcess,hStatusLastCopy;
+  std::vector<float> hPt, hEta, hPhi, hMass,hP,hPx,hPy,hPz,hEnergy;
+  std::vector<float> prodX, prodY, prodZ, decayX, decayY, decayZ, trueLxy, trueL3D, trueCt;
+  std::vector<int> prodValid, decayValid, decaySource, decayResolved, trueLengthValid, trueCtValid;
   for (const int index : hPruned) {
     const auto& h = (*pruned)[index];
     hPdg.push_back(h.pdgId()); hPt.push_back(h.pt()); hEta.push_back(h.eta()); hPhi.push_back(h.phi()); hMass.push_back(h.mass());
+    if (!saveDecayVertexTruth_) continue;
+    hIndex.push_back(hIndex.size());
+    hStatus.push_back(h.status());hIsPrompt.push_back(h.statusFlags().isPrompt());hIsHardProcess.push_back(h.statusFlags().isHardProcess());hStatusLastCopy.push_back(h.statusFlags().isLastCopy());
+    hP.push_back(h.p());hPx.push_back(h.px());hPy.push_back(h.py());hPz.push_back(h.pz());hEnergy.push_back(h.energy());
+    const double x = h.vx(), y = h.vy(), z = h.vz();
+    const bool validProd = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+    prodX.push_back(validProd ? x : kInvalid); prodY.push_back(validProd ? y : kInvalid); prodZ.push_back(validProd ? z : kInvalid);
+    prodValid.push_back(validProd ? 1 : 0);
+    std::vector<std::array<double, 3>> daughterVertices;
+    for (size_t id = 0; id < h.numberOfDaughters(); ++id) {
+      const reco::Candidate* daughter = h.daughter(id);
+      if (!daughter) continue;
+      const double dx = daughter->vx(), dy = daughter->vy(), dz = daughter->vz();
+      if (std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz)) daughterVertices.push_back({dx, dy, dz});
+    }
+    bool resolved = !daughterVertices.empty();
+    if (resolved) {
+      constexpr double kVertexToleranceCm = 1.e-4;
+      for (const auto& v : daughterVertices) {
+        const double distance = std::sqrt(std::pow(v[0] - daughterVertices.front()[0], 2) +
+                                          std::pow(v[1] - daughterVertices.front()[1], 2) +
+                                          std::pow(v[2] - daughterVertices.front()[2], 2));
+        if (!std::isfinite(distance) || distance > kVertexToleranceCm) resolved = false;
+      }
+    }
+    const bool validDecay = resolved;
+    const double dx = validDecay ? daughterVertices.front()[0] : 0.;
+    const double dy = validDecay ? daughterVertices.front()[1] : 0.;
+    const double dz = validDecay ? daughterVertices.front()[2] : 0.;
+    decayX.push_back(validDecay ? dx : kInvalid); decayY.push_back(validDecay ? dy : kInvalid); decayZ.push_back(validDecay ? dz : kInvalid);
+    decayValid.push_back(validDecay ? 1 : 0); decayResolved.push_back(resolved ? 1 : 0);
+    decaySource.push_back(validDecay ? 1 : 0);  // immediate daughter production vertex
+    const double lx = validDecay && validProd ? dx - x : 0.;
+    const double ly = validDecay && validProd ? dy - y : 0.;
+    const double lz = validDecay && validProd ? dz - z : 0.;
+    const bool lengthValid = validDecay && validProd && std::isfinite(lx + ly + lz);
+    const double lxy = lengthValid ? std::hypot(lx, ly) : 0.;
+    const double l3d = lengthValid ? std::sqrt(lx * lx + ly * ly + lz * lz) : 0.;
+    trueLxy.push_back(lengthValid ? lxy : kInvalid); trueL3D.push_back(lengthValid ? l3d : kInvalid);
+    trueLengthValid.push_back(lengthValid ? 1 : 0);
+    const double p2 = h.px() * h.px() + h.py() * h.py() + h.pz() * h.pz();
+    const double ct = lengthValid && p2 > 0. && std::isfinite(p2) ? h.mass() * (lx * h.px() + ly * h.py() + lz * h.pz()) / p2 : 0.;
+    const bool ctValid = lengthValid && std::isfinite(ct);
+    trueCt.push_back(ctValid ? ct : kInvalid); trueCtValid.push_back(ctValid ? 1 : 0);
   }
   hTable->addColumn<int>("prunedGenIdx", hPruned, "index in prunedGenParticles");
   hTable->addColumn<int>("pdgId", hPdg, "signed PDG identifier");
@@ -679,18 +744,45 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
   hTable->addColumn<int>("quarkIdx", v2QFrag, "validated QFrag row, or -1 when unresolved/unmapped");
   hTable->addColumn<int>("associationQuality", v2Quality, "0 missing, 1 unique ancestry, 2 ambiguous, 3 unknown/incomplete");
   hTable->addColumn<int>("fragmentationSourceCertain", v2SourceCertain, "1 only when a physical fragmentation source is established");
-  hTable->addColumn<int>("preHadPrunedIdx", v2PreHad, "validated pre-hadronization copy index in prunedGenParticles, or -1");
-  hTable->addColumn<float>("preHadPt", v2PreHadPt, "pre-hadronization proxy transverse momentum [GeV], or -999");
-  hTable->addColumn<float>("preHadEta", v2PreHadEta, "pre-hadronization proxy pseudorapidity, or -999");
-  hTable->addColumn<float>("preHadPhi", v2PreHadPhi, "pre-hadronization proxy azimuth [rad], or -999");
-  hTable->addColumn<int>("preHadKinematicsValid", v2KinValid, "1 valid pre-hadronization kinematics, 0 otherwise");
-  hTable->addColumn<float>("zProj", hZProj, "dot(p_hadron,p_quark)/|p_quark|^2; unclipped, or -999 when unavailable");
-  hTable->addColumn<float>("zT", hZT, "hadron pT / associated quark-proxy pT; unclipped, or -999 when unavailable");
-  hTable->addColumn<float>("deltaR_DQuark", hDeltaRQuark, "deltaR between hadron and associated quark proxy (D or B), or -999");
-  hTable->addColumn<float>("kTrel", hKTrel, "|p_hadron x p_quark|/|p_quark| [GeV], or -999 when unavailable");
-  hTable->addColumn<int>("observableInputsValid", hObservableInputsValid, "1 for unique valid QFrag association, valid proxy kinematics, and finite nonzero observable inputs");
-  hTable->addColumn<int>("auxiliaryTargetValid", hAuxiliaryTargetValid, "prompt-D fragmentation target mask; preserves prompt-D meaning");
-  hTable->addColumn<int>("bFragmentationTargetValid", hBFragmentationTargetValid, "B fragmentation target mask; 1 only for uniquely associated, source-certain b-quark proxy and valid inputs");
+  if (saveFragmentationObservables_) {
+    hTable->addColumn<int>("preHadPrunedIdx", v2PreHad, "validated pre-hadronization copy index in prunedGenParticles, or -1");
+    hTable->addColumn<float>("preHadPt", v2PreHadPt, "pre-hadronization proxy transverse momentum [GeV], or -999");
+    hTable->addColumn<float>("preHadEta", v2PreHadEta, "pre-hadronization proxy pseudorapidity, or -999");
+    hTable->addColumn<float>("preHadPhi", v2PreHadPhi, "pre-hadronization proxy azimuth [rad], or -999");
+    hTable->addColumn<int>("preHadKinematicsValid", v2KinValid, "1 valid pre-hadronization kinematics, 0 otherwise");
+    hTable->addColumn<float>("zProj", hZProj, "dot(p_hadron,p_quark)/|p_quark|^2; unclipped, or -999 when unavailable");
+    hTable->addColumn<float>("zT", hZT, "hadron pT / associated quark-proxy pT; unclipped, or -999 when unavailable");
+    hTable->addColumn<float>("deltaR_DQuark", hDeltaRQuark, "deltaR between hadron and associated quark proxy (D or B), or -999");
+    hTable->addColumn<float>("kTrel", hKTrel, "|p_hadron x p_quark|/|p_quark| [GeV], or -999 when unavailable");
+    hTable->addColumn<int>("observableInputsValid", hObservableInputsValid, "1 for unique valid QFrag association, valid proxy kinematics, and finite nonzero observable inputs");
+    hTable->addColumn<int>("auxiliaryTargetValid", hAuxiliaryTargetValid, "prompt-D fragmentation target mask; preserves prompt-D meaning");
+    hTable->addColumn<int>("bFragmentationTargetValid", hBFragmentationTargetValid, "B fragmentation target mask; 1 only for uniquely associated, source-certain b-quark proxy and valid inputs");
+  }
+  if (saveDecayVertexTruth_) {
+    hTable->addColumn<int>("hadronIdx",hIndex,"event-local QHadron row identifier");
+    hTable->addColumn<int>("status",hStatus,"pruned generator status of selected final-copy hadron");
+    hTable->addColumn<int>("isPrompt",hIsPrompt,"MiniAOD GenStatusFlags isPrompt bit");
+    hTable->addColumn<int>("isHardProcess",hIsHardProcess,"MiniAOD GenStatusFlags isHardProcess bit");
+    hTable->addColumn<int>("statusFlagLastCopy",hStatusLastCopy,"MiniAOD GenStatusFlags isLastCopy bit; selected final copy also follows the producer's daughter-copy test");
+    hTable->addColumn<float>("p",hP,"total generator momentum [GeV]");hTable->addColumn<float>("px",hPx,"generator px [GeV]");hTable->addColumn<float>("py",hPy,"generator py [GeV]");hTable->addColumn<float>("pz",hPz,"generator pz [GeV]");hTable->addColumn<float>("energy",hEnergy,"generator energy [GeV]");
+    hTable->addColumn<float>("prodX", prodX, "generator hadron production x [cm]");
+    hTable->addColumn<float>("prodY", prodY, "generator hadron production y [cm]");
+    hTable->addColumn<float>("prodZ", prodZ, "generator hadron production z [cm]");
+    hTable->addColumn<int>("prodVertexValid", prodValid, "1 when generator hadron production position is finite");
+    hTable->addColumn<float>("decayX", decayX, "generator decay x from consistent immediate-daughter production vertices [cm], or -999");
+    hTable->addColumn<float>("decayY", decayY, "generator decay y from consistent immediate-daughter production vertices [cm], or -999");
+    hTable->addColumn<float>("decayZ", decayZ, "generator decay z from consistent immediate-daughter production vertices [cm], or -999");
+    hTable->addColumn<int>("decayVertexValid", decayValid, "1 only when immediate-daughter vertices are present and mutually consistent");
+    hTable->addColumn<int>("decayVertexResolved", decayResolved, "1 when the decay vertex was unambiguous within 1e-4 cm");
+    hTable->addColumn<int>("decayVertexSource", decaySource, "1 immediate daughter production vertex; 0 unavailable/ambiguous");
+    if (saveDerivedDecayTruth_) {
+      hTable->addColumn<float>("trueLxy", trueLxy, "transverse generator decay length [cm], or -999");
+      hTable->addColumn<float>("trueL3D", trueL3D, "3D generator decay length [cm], or -999");
+      hTable->addColumn<int>("trueDecayLengthValid", trueLengthValid, "1 when production and decay positions are valid");
+      hTable->addColumn<float>("trueCt", trueCt, "projected proper decay length m*(L dot p)/|p|^2 [cm], or -999");
+      hTable->addColumn<int>("trueCtValid", trueCtValid, "1 when true proper decay length inputs and result are valid");
+    }
+  }
 
   auto cTable = std::make_unique<nanoaod::FlatTable>(cPacked.size(), "QGenCharged", false, false);
   cTable->addColumn<int>("packedGenIdx", cPacked, "index in packedGenParticles");

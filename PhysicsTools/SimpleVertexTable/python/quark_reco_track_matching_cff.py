@@ -58,11 +58,25 @@ quarkAssociationGNNTableProducer = cms.EDProducer(
     legacyHadronTable=cms.InputTag("genVertexTable", "GVTable"),
     pairTable=cms.InputTag("trackGVFeatures", "trackPair"),
     produceFullValidationTables=cms.bool(True),
+    saveFragmentationObservables=cms.untracked.bool(True),
+)
+
+truthMatchedPairFitProducer = cms.EDProducer(
+    "TruthMatchedPairFitProducer",
+    tracks=cms.InputTag("unpackedTracksAndVertices"),
+    primaryVertices=cms.InputTag("unpackedTracksAndVertices"),
+    prunedGenParticles=cms.InputTag("prunedGenParticles"),
+    hadronTable=cms.InputTag("quarkFragmentationProducer", "QHadronTable"),
+    genChargedTable=cms.InputTag("quarkFragmentationProducer", "QGenChargedTable"),
+    recoTrackTable=cms.InputTag("quarkRecoTrackMatchProducer"),
+    pairTable=cms.InputTag("trackGVFeatures", "trackPair"),
+    transientTracks=cms.InputTag("trackGVFeatures", "transientTracks"),
 )
 
 
 def custom_quark_reco_track_matching(process, compact=False, enableTwoTrackVertexFit=False,
-                                     enableVertexFitTiming=False):
+                                     enableVertexFitTiming=False, enableTruthMatchedPairFit=False,
+                                     saveFragmentationObservables=True):
     """Schedule legacy AssociationGNN features and Stage-2 QFrag associations.
 
     The caller schedules Stage 1 first. Historical track/pair calculations and
@@ -77,18 +91,24 @@ def custom_quark_reco_track_matching(process, compact=False, enableTwoTrackVerte
     process.genVertexTable = qfragGenVertexTable.clone()
     process = custom_train_features(process, gvProducerLabel="genVertexTable",
                                     enableTwoTrackVertexFit=enableTwoTrackVertexFit,
-                                    enableVertexFitTiming=enableVertexFitTiming)
+                                    enableVertexFitTiming=enableVertexFitTiming,
+                                    enableTruthMatchedPairFit=enableTruthMatchedPairFit)
     # TrackGVFeaturesProducer declares this legacy token but does not read it;
     # bind it to an available reco::VertexCollection in this training-only path.
     process.trackGVFeatures.secondaryVertices = cms.InputTag("offlineSlimmedPrimaryVertices")
     process.quarkRecoTrackMatchProducer = quarkRecoTrackMatchProducer.clone()
     process.quarkAssociationGNNTableProducer = quarkAssociationGNNTableProducer.clone(
         produceFullValidationTables=cms.bool(not compact),
+        saveFragmentationObservables=cms.untracked.bool(saveFragmentationObservables),
     )
+    if enableTruthMatchedPairFit:
+        process.truthMatchedPairFitProducer = truthMatchedPairFitProducer.clone()
     legacy_match_sequence = process.trackTable if compact else process.trackGenMatch * process.trackTable
     process.quark_reco_track_matching_sequence = cms.Sequence(
         process.mergedGenParticles * process.unpackedTracksAndVertices * process.trackVertexVars *
-        legacy_match_sequence * process.genVertexTable * process.trackGVFeatures *
-        process.quarkRecoTrackMatchProducer * process.quarkAssociationGNNTableProducer
+        legacy_match_sequence * process.genVertexTable * process.quarkRecoTrackMatchProducer *
+        process.trackGVFeatures * process.quarkAssociationGNNTableProducer
     )
+    if enableTruthMatchedPairFit:
+        process.quark_reco_track_matching_sequence *= process.truthMatchedPairFitProducer
     return process
