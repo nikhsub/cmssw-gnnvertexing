@@ -212,7 +212,8 @@ public:
             if(fit.fitValid) ++success; else ++failed; if(fit.fitValid&&!fit.covarianceValid) ++covBad;
           }
         }
-        const double dr=reco::deltaR(tracks[ta].eta(),tracks[ta].phi(),tracks[tb].eta(),tracks[tb].phi());
+        const double dphi=std::remainder(tracks[ta].phi()-tracks[tb].phi(),2.*std::acos(-1.));
+        const double dr=std::hypot(tracks[ta].eta()-tracks[tb].eta(),dphi);
         const double massHyp=0.13957018;
         const double e1=std::sqrt(tracks[ta].p()*tracks[ta].p()+massHyp*massHyp),e2=std::sqrt(tracks[tb].p()*tracks[tb].p()+massHyp*massHyp);
         const double sx=tracks[ta].px()+tracks[tb].px(),sy=tracks[ta].py()+tracks[tb].py(),sz=tracks[ta].pz()+tracks[tb].pz();

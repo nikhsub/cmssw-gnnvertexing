@@ -131,7 +131,6 @@ public:
       const double covYY = out.covariance[3], covYZ = out.covariance[4], covZZ = out.covariance[5];
       const double covarianceScale = std::max({std::abs(covXX), std::abs(covYY),
                                                std::abs(covZZ), 1.e-30});
-      const double tolerance1 = 1.e-10 * covarianceScale;
       const double tolerance2 = 1.e-10 * covarianceScale * covarianceScale;
       const double tolerance3 = tolerance2 * covarianceScale;
       const double minorXY = covXX * covYY - covXY * covXY;

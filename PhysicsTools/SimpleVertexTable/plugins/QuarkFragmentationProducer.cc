@@ -424,7 +424,6 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
           const bool incomplete = v2Ancestry.incomplete || v2Ancestry.truncated;
           v2Quality[ih] = incomplete ? kV2Unknown : kV2Missing;
         } else {
-          const int lineageId = compatiblePaths.front().first;
           const CopyPath& path = compatiblePaths.front().second;
           if (!path.unique) {
             v2Quality[ih] = kV2Ambiguous;
@@ -701,7 +700,8 @@ void QuarkFragmentationProducer::produce(edm::Event& event, const edm::EventSetu
       const reco::Candidate* daughter = h.daughter(id);
       if (!daughter) continue;
       const double dx = daughter->vx(), dy = daughter->vy(), dz = daughter->vz();
-      if (std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz)) daughterVertices.push_back({dx, dy, dz});
+      if (std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))
+        daughterVertices.push_back(std::array<double, 3>{{dx, dy, dz}});
     }
     bool resolved = !daughterVertices.empty();
     if (resolved) {
