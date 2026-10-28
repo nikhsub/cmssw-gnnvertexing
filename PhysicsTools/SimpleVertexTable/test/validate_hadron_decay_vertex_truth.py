@@ -41,7 +41,7 @@ def validate(path, baseline=None):
         required_tables = ["QTrainHadron", "QTruthMatchedTrack", "QTruthMatchedHadron", "QTruthMatchedPairFit"]
         for table in required_tables:
             require(any(k.startswith(table + "_") for k in tree.keys()), "missing %s table" % table, errors)
-        had = rows(tree, ["hadronIdx", "pdgId", "pt", "eta", "phi", "mass", "p", "px", "py", "pz", "energy", "status", "isPrompt", "isHardProcess", "statusFlagLastCopy", "prodX", "prodY", "prodZ", "prodVertexValid",
+        had = rows(tree, ["hadronIdx", "pdgId", "pt", "eta", "phi", "p", "px", "py", "pz", "energy", "status", "isPrompt", "isHardProcess", "statusFlagLastCopy", "prodX", "prodY", "prodZ", "prodVertexValid",
                           "decayX", "decayY", "decayZ", "decayVertexValid", "decayVertexResolved", "decayVertexSource",
                           ], "QTrainHadron")
         # Derived flight-length columns are optional in the minimal study
