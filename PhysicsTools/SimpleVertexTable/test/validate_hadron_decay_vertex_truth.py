@@ -29,6 +29,13 @@ def rows(tree, names, prefix):
     return {n: ak.to_list(arrays[b]) for n, b in found.items()}
 
 
+def singleton_rows(tree, names, prefix):
+    """Normalize FlatTable(singleton=True) scalar branches to one-item rows."""
+    values = rows(tree, names, prefix)
+    return {name: [row if isinstance(row, list) else [row] for row in events]
+            for name, events in values.items()}
+
+
 def require(condition, message, errors):
     if not condition:
         errors.append(message)
@@ -61,7 +68,7 @@ def validate(path, baseline=None):
                             "fitReusedFromTrackPair", "fitReusedFromEarlierTruthPair", "vtxFitValid", "vtxFitStatus", "vtxCovarianceValid",
                             "vtxX", "vtxY", "vtxZ", "vtxCovXX", "vtxCovXY", "vtxCovXZ", "vtxCovYY", "vtxCovYZ", "vtxCovZZ",
                             "vtxLxyValid", "vtxLxy", "vtxL3DValid", "vtxL3D", "vtxPointing2DValid", "vtxPointing3DValid"], "QTruthMatchedPairFit")
-        summary = rows(tree, ["run", "luminosityBlock", "event", "recoPVValid", "recoPVX", "recoPVY", "recoPVZ", "recoPVCovXX", "recoPVCovXY", "recoPVCovXZ", "recoPVCovYY", "recoPVCovYZ", "recoPVCovZZ"], "QTruthPairFitSummary")
+        summary = singleton_rows(tree, ["run", "luminosityBlock", "event", "recoPVValid", "recoPVX", "recoPVY", "recoPVZ", "recoPVCovXX", "recoPVCovXY", "recoPVCovXZ", "recoPVCovYY", "recoPVCovYZ", "recoPVCovZZ"], "QTruthPairFitSummary")
         original_hadrons = rows(tree, ["hadronIdx", "prunedGenIdx"], "QHadron")
         tp_a = find(tree, "trk1Idx", prefix="trackPair", required=False)
         tp_b = find(tree, "trk2Idx", prefix="trackPair", required=False)
