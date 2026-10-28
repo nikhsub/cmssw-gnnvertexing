@@ -66,7 +66,7 @@ def validate(path, baseline=None):
         pairs = rows(tree, ["trackIdx1", "trackIdx2", "hadronIdx", "qTrainHadronIdx", "genChargedIdx1", "genChargedIdx2", "matchStatus1", "matchStatus2",
                             "daughterRelation1", "daughterRelation2", "commonImmediateDecayVertex", "passedOrdinaryPairSelection", "trackPairIdx",
                             "fitReusedFromTrackPair", "fitReusedFromEarlierTruthPair", "vtxFitValid", "vtxFitStatus", "vtxCovarianceValid",
-                            "vtxX", "vtxY", "vtxZ", "vtxCovXX", "vtxCovXY", "vtxCovXZ", "vtxCovYY", "vtxCovYZ", "vtxCovZZ",
+                            "vtxX", "vtxY", "vtxZ", "vtxChi2", "vtxProb", "vtxCovXX", "vtxCovXY", "vtxCovXZ", "vtxCovYY", "vtxCovYZ", "vtxCovZZ",
                             "vtxLxyValid", "vtxLxy", "vtxL3DValid", "vtxL3D", "vtxPointing2DValid", "vtxPointing3DValid"], "QTruthMatchedPairFit")
         summary = singleton_rows(tree, ["run", "luminosityBlock", "event", "recoPVValid", "recoPVX", "recoPVY", "recoPVZ", "recoPVCovXX", "recoPVCovXY", "recoPVCovXZ", "recoPVCovYY", "recoPVCovYZ", "recoPVCovZZ"], "QTruthPairFitSummary")
         original_hadrons = rows(tree, ["hadronIdx", "prunedGenIdx"], "QHadron")
