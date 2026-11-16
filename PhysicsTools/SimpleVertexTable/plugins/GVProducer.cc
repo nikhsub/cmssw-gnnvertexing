@@ -348,7 +348,7 @@ void GVProducer::produce(edm::Event& iEvent, const edm::EventSetup&) {
 int GVProducer::checkPDG(int abs_pdg) const {
     std::vector<int> pdgList_B = {521, 511, 531, 541, 5122, 5132, 5232, 5332, 5142, 5242, 5342, 5512, 5532, 5542, 5554};
     std::vector<int> pdgList_D = {411, 421, 431, 4122, 4232, 4132, 4332, 4412, 4422, 4432, 4444};
-    std::vector<int> pdgList_S = {3122, 3222, 3212, 3312, 3322, 3334};
+    std::vector<int> pdgList_S = {310, 3122, 3112, 3222, 3212, 3312, 3322, 3334};
     std::vector<int> pdgList_Tau = {15};
 
     if (std::find(pdgList_B.begin(), pdgList_B.end(), abs_pdg) != pdgList_B.end()) return 1;
@@ -390,7 +390,7 @@ std::optional<std::tuple<float, float, float>> GVProducer::isAncestor(const reco
                                                                               const reco::Candidate* particle) const {
     std::vector<int> pdgList_B = {521, 511, 531, 541, 5122, 5132, 5232, 5332, 5142, 5242, 5342, 5512, 5532, 5542, 5554};
     std::vector<int> pdgList_D = {411, 421, 431, 4122, 4232, 4132, 4332, 4412, 4422, 4432, 4444};
-    std::vector<int> pdgList_S = {3122, 3222, 3212, 3312, 3322, 3334};
+    std::vector<int> pdgList_S = {310, 3122, 3112, 3222, 3212, 3312, 3322, 3334};
     std::vector<int> pdgList_Tau = {15};
     std::unordered_set<int> pdgSet_D(pdgList_D.begin(), pdgList_D.end());
     std::unordered_set<int> pdgSet_B(pdgList_B.begin(), pdgList_B.end());
