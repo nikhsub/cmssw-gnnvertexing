@@ -4,6 +4,7 @@
 #include "TLorentzVector.h"
 #include "TVector3.h"
 #include "DataFormats/VertexReco/interface/Vertex.h"
+#include "DataFormats/Common/interface/ValueMap.h"
 #include "DataFormats/NanoAOD/interface/FlatTable.h"
 #include "RecoVertex/VertexTools/interface/VertexDistance3D.h"
 #include "RecoVertex/VertexTools/interface/VertexDistanceXY.h"
@@ -23,6 +24,8 @@ public:
 private:
     edm::EDGetTokenT<std::vector<reco::Vertex>> svToken;
     edm::EDGetTokenT<std::vector<reco::Vertex>> pvs_;
+    edm::EDGetTokenT<edm::ValueMap<int>> filteredTrackIndexToken_;
+    bool hasFilteredTrackIndex_;
     double dlenSigMin_;  
     edm::ESGetToken<TransientTrackBuilder, TransientTrackRecord> theTTBToken;
     //edm::EDGetTokenT<edm::ValueMap<float>> svscoreToken_;
@@ -31,10 +34,13 @@ private:
 SVTableProducer::SVTableProducer(const edm::ParameterSet &iConfig): 
     svToken(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("src"))),
     pvs_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("pvSrc"))),
+    hasFilteredTrackIndex_(iConfig.existsAs<edm::InputTag>("filteredTrackIndex")),
     dlenSigMin_(iConfig.getParameter<double>("dlenSigMin")),
     theTTBToken(esConsumes<TransientTrackBuilder, TransientTrackRecord>(edm::ESInputTag("", "TransientTrackBuilder")))
     //svscoreToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("pvSrc")))
 {
+    if (hasFilteredTrackIndex_)
+        filteredTrackIndexToken_ = consumes<edm::ValueMap<int>>(iConfig.getParameter<edm::InputTag>("filteredTrackIndex"));
     produces<nanoaod::FlatTable>("SVTable");
     produces<nanoaod::FlatTable>("SVtrksTable");
     produces<nanoaod::FlatTable>("PVTable");   // <-- new
@@ -47,6 +53,9 @@ void SVTableProducer::produce(edm::StreamID,
         edm::Handle<std::vector<reco::Vertex>> svs;
         iEvent.getByToken(svToken, svs);
         auto pvsIn = iEvent.getHandle(pvs_);
+        edm::Handle<edm::ValueMap<int>> filteredTrackIndex;
+        if (hasFilteredTrackIndex_)
+            iEvent.getByToken(filteredTrackIndexToken_, filteredTrackIndex);
         VertexDistance3D vdist;
         //edm::Handle<edm::ValueMap<float>> svscoreHandle;
         //iEvent.getByToken(svscoreToken_, svscoreHandle);
@@ -110,6 +119,7 @@ void SVTableProducer::produce(edm::StreamID,
 
         std::vector<float> x, y, z, chi2, ndof, pt, eta, phi, mass, dlen, dlenSig;
         std::vector<float> trk_pt, trk_eta, trk_phi, trk_weight;// trk_SVscore;
+        std::vector<int> trk_trackIdx;
         std::vector<float> trk_ip_z, trk_ip_z_sig, trk_ip2d, trk_ip3d, trk_ip2d_sig, trk_ip3d_sig, trk_p, trk_charge, trk_numberOfValidHits, trk_numberOfValidPixelHits, trk_numberOfValidStripHits;
         // vector pair [num_tracks * num_tracks / 2]
         // trk_i 
@@ -169,6 +179,10 @@ void SVTableProducer::produce(edm::StreamID,
                     trk_weight.push_back(w);
                     trk_eta.push_back(trkRef->eta());
                     trk_phi.push_back(trkRef->phi());
+                    int trackIdx = -1;
+                    if (filteredTrackIndex.isValid() && filteredTrackIndex->contains(trkRef.id()))
+                        trackIdx = (*filteredTrackIndex)[trkRef];
+                    trk_trackIdx.push_back(trackIdx);
                     //edm::Ref<TrackCollection> mapRef = trackMap[trkRef];
                     //if (mapRef.isNonnull()) {
                     //    trk_SVscore.push_back((*svscoreHandle)[mapRef]);
@@ -243,6 +257,8 @@ void SVTableProducer::produce(edm::StreamID,
         table->addColumn<float>("phi", phi, "phi");
         table->addColumn<float>("mass", mass, "mass");
         trk_table->addColumn<float>("trk_pt", trk_pt, "trk_pt");
+        trk_table->addColumn<int>("trk_trackIdx", trk_trackIdx,
+                                  "Event-local row index in filteredTracks/trackTable; -1 when absent");
         trk_table->addColumn<float>("trk_weight", trk_weight, "trk_weight");
         trk_table->addColumn<float>("trk_eta", trk_eta, "trk_eta ");
         trk_table->addColumn<float>("trk_phi", trk_phi, "trk_phi");

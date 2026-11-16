@@ -2,6 +2,7 @@
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 #include "FWCore/Utilities/interface/InputTag.h"
+#include "DataFormats/Common/interface/ValueMap.h"
 
 #include "DataFormats/TrackReco/interface/Track.h"
 #include "DataFormats/TrackReco/interface/TrackFwd.h"
@@ -10,6 +11,7 @@
 
 #include <unordered_set>
 #include <unordered_map>
+#include <vector>
 
 namespace pat {
 
@@ -38,6 +40,7 @@ PATTrackFromVertexFilter::PATTrackFromVertexFilter(const edm::ParameterSet& iCon
 {
   produces<reco::TrackCollection>();
   produces<reco::VertexCollection>();
+  produces<edm::ValueMap<int>>("filteredIndex");
 }
 
 void PATTrackFromVertexFilter::produce(edm::StreamID,
@@ -55,10 +58,16 @@ void PATTrackFromVertexFilter::produce(edm::StreamID,
 
   auto outTracks = std::make_unique<TrackCollection>();
   auto outPVs    = std::make_unique<VertexCollection>();
+  std::vector<int> inputToFilteredIndex(tracks->size(), -1);
 
   if (pvs->empty()) {
     iEvent.put(std::move(outTracks));
     iEvent.put(std::move(outPVs));
+    auto indexMap = std::make_unique<edm::ValueMap<int>>();
+    edm::ValueMap<int>::Filler filler(*indexMap);
+    filler.insert(tracks, inputToFilteredIndex.begin(), inputToFilteredIndex.end());
+    filler.fill();
+    iEvent.put(std::move(indexMap), "filteredIndex");
     return;
   }
 
@@ -84,12 +93,21 @@ void PATTrackFromVertexFilter::produce(edm::StreamID,
     const bool keep =  std::abs(tk.dz(pvPos)) < dzCut_;
     if (keep) {
       oldToNew[i] = newIdx++;
+      inputToFilteredIndex[i] = static_cast<int>(oldToNew[i]);
       outTracks->push_back(tk);
     }
   }
 
   // Put tracks first to get OrphanHandle for TrackRef building
   OrphanHandle<TrackCollection> oh = iEvent.put(std::move(outTracks));
+
+  // Map each input-track key to its row in the filtered output. Tracks rejected
+  // by the dz selection retain the -1 sentinel.
+  auto indexMap = std::make_unique<edm::ValueMap<int>>();
+  edm::ValueMap<int>::Filler filler(*indexMap);
+  filler.insert(tracks, inputToFilteredIndex.begin(), inputToFilteredIndex.end());
+  filler.fill();
+  iEvent.put(std::move(indexMap), "filteredIndex");
 
   // Rebuild PV collection with remapped track refs
   for (const auto& oldPV : *pvs) {
