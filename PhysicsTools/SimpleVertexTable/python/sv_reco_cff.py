@@ -42,6 +42,10 @@ trackPairFeatures = cms.EDProducer("TrackPairFeaturesProducer",
     maxPairEta = cms.double(2.5),
     maxInvMass = cms.double(5.0),
     maxDca = cms.double(0.4),
+    # Optional two-track Kalman fit for each selected trackPair row.
+    # Off by default so existing reconstruction and label production are unchanged.
+    enableTwoTrackVertexFit = cms.bool(False),
+    enableVertexFitTiming = cms.bool(False),
 )
 # Truth-dependent labeling (per-track hadidx/label, per-pair edgeLabel). Needs
 # gvTable/gvDaughtersTable/genPartIdx (generator truth) -- MC-only, training/ntuple
@@ -282,7 +286,8 @@ def apply_overrides(process, overrides):
   print("sv_reco overrides:", overrides)
 
 
-def custom_sv_tracks(process, threshold_values=(0.0, 0., 0.), f1=0.7, minSig1=2, f2=1., minSig2=0., overrides=None, isMC=True):
+def custom_sv_tracks(process, threshold_values=(0.0, 0., 0.), f1=0.7, minSig1=2, f2=1., minSig2=0., overrides=None, isMC=True,
+                     enableTwoTrackVertexFit=False, enableVertexFitTiming=False):
   process.unpackedTracksAndVertices = unpackedTracksAndVertices
   process.filteredTracks = filteredTracks
   
@@ -305,7 +310,10 @@ def custom_sv_tracks(process, threshold_values=(0.0, 0., 0.), f1=0.7, minSig1=2,
   process.svTable = svTable
   process.modelInference = modelInference
   process.trackTable = trackTableFor(isMC)
-  process.trackPairFeatures = trackPairFeatures
+  process.trackPairFeatures = trackPairFeatures.clone(
+      enableTwoTrackVertexFit=cms.bool(enableTwoTrackVertexFit),
+      enableVertexFitTiming=cms.bool(enableVertexFitTiming),
+  )
   process.trackVertexVars = trackVertexVars
 
   modules = [

@@ -31,6 +31,10 @@ options.register('SVSeed',      0.85,         VarParsing.multiplicity.singleton,
 options.register('SVEdge',      0.95,         VarParsing.multiplicity.singleton,  VarParsing.varType.float,   "Threshold for edgeScore_ij of track j to be included in seed of track i")
 
 options.register('skimEMu',     False,       VarParsing.multiplicity.singleton,  VarParsing.varType.bool,    "Keep only events with an opposite-charge mu-e pair and >=2 jets (loose, ID-free pre-selection for the BTVNanoCommissioning ttdilep e-mu selection); track collection only")
+options.register('enableTwoTrackVertexFit', False, VarParsing.multiplicity.singleton, VarParsing.varType.bool,
+                 "Fit every selected trackPair row with an unconstrained two-track Kalman vertex fit")
+options.register('enableVertexFitTiming', False, VarParsing.multiplicity.singleton, VarParsing.varType.bool,
+                 "Save per-event transient-track build and vertex-fit timing counters")
 options.register('f1',          0.6,        VarParsing.multiplicity.singleton,  VarParsing.varType.float,   "f1")
 options.register('minS1',       4.,         VarParsing.multiplicity.singleton,  VarParsing.varType.float,   "minS1")
 options.register('f2',          0.8,         VarParsing.multiplicity.singleton,  VarParsing.varType.float,   "f2") # 1 to disable, 0.2 default
@@ -284,7 +288,8 @@ if options.collection=="candidate":
 elif options.collection=="track":
     process = custom_sv_tracks(process, threshold_values=(options.SVLoose, options.SVSeed, options.SVEdge), f1=options.f1, minSig1=options.minS1, f2=options.f2, minSig2=options.minS2,
                                  overrides={k: getattr(options, k) for k in ['clusterMaxDistance', 'clusterMaxSignificance', 'clusterMinAngleCosine', 'distanceRatio', 'seedMin3DIPSignificance', 'seedMin3DIPValue', 'vertexMinAngleCosine', 'vertexMinDLen2DSig', 'vertexMinDLenSig', 'dlenSigMin'] if getattr(options, k) != UNSET},
-                                 isMC=isMC)
+                                 isMC=isMC, enableTwoTrackVertexFit=options.enableTwoTrackVertexFit,
+                                 enableVertexFitTiming=options.enableVertexFitTiming)
     # genWeightsTable keeps the run/lumi-level sum of weights: it has to see every event, so it stays before the skim
     skim = process.emuSkim if options.skimEMu else cms.Sequence()
     if isMC:

@@ -2,6 +2,7 @@
 <use   name="FWCore/Framework"/>
 <use   name="FWCore/ParameterSet"/>
 <use   name="DataFormats/VertexReco"/>
+<use   name="DataFormats/TrackReco"/>
 <use   name="DataFormats/NanoAOD"/>
 <use   name="CommonTools/Utils"/>
 
@@ -13,7 +14,9 @@
 <use name="PhysicsTools/PatAlgos"/>
 <use name="roothistmatrix"/>
 <use name="RecoVertex/VertexTools"/>
+<use name="RecoVertex/KalmanVertexFit"/>
 <use name="RecoVertex/VertexPrimitives"/>
+<use name="root"/>
 <use name="DataFormats/L1TGlobal"/>
 <use name="IOPool/Provenance"/>
 <use name="DQMServices/Core"/>
@@ -38,6 +41,7 @@
 <use name="HLTrigger/HLTcore"/>
 <use name="RecoBTag/FeatureTools"/>
 <use name="TrackingTools/Records"/>
+<use name="TrackingTools/TransientTrack"/>
 <use name="GeneratorInterface/Pythia8Interface"/>
 <use name="GeneratorInterface/ExternalDecays"/>
 <use name="RecoBTag/ONNXRuntime"/>
