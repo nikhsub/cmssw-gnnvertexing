@@ -10,8 +10,8 @@
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 #include "FWCore/Utilities/interface/InputTag.h"
+#include "DataFormats/Common/interface/ValueMap.h"
 
-//#include "DataFormats/Common/interface/ValueMap.h"
 //#include "DataFormats/Common/interface/View.h"
 //#include "DataFormats/PatCandidates/interface/Vertexing.h"
 
@@ -19,6 +19,8 @@
 #include "DataFormats/VertexReco/interface/VertexFwd.h"
 #include "DataFormats/PatCandidates/interface/PackedCandidate.h"
 #include "DataFormats/Candidate/interface/VertexCompositePtrCandidate.h"
+
+#include <vector>
 
 //#include "PhysicsTools/PatAlgos/interface/VertexingHelper.h"
 
@@ -63,6 +65,8 @@ PATTrackAndVertexUnpacker::PATTrackAndVertexUnpacker(const edm::ParameterSet& iC
     produces<reco::TrackCollection>();
     produces<reco::VertexCollection>();
     produces<reco::VertexCollection>("secondary");
+    produces<edm::ValueMap<int>>("packedTrackIndex");
+    produces<edm::ValueMap<int>>("lostTrackIndex");
 }
 
 
@@ -87,6 +91,8 @@ void PATTrackAndVertexUnpacker::produce(edm::StreamID, edm::Event & iEvent, cons
 	std::map<unsigned int, std::vector<unsigned int> > asso;
 	std::map<unsigned int, unsigned int> trackKeys;
 	std::map<unsigned int, unsigned int> addTrackKeys; // new index to map additional tracks index to the output track collection index
+	std::vector<int> packedToUnpacked(cands->size(), -1);
+	std::vector<int> lostToUnpacked(hasAdditionalTracks ? addTracks->size() : 0, -1);
 	unsigned int j=0;
 	
 	// Packed PF Candidates
@@ -103,6 +109,7 @@ void PATTrackAndVertexUnpacker::produce(edm::StreamID, edm::Event & iEvent, cons
 					asso[ipv].push_back(j);
 			}
 			trackKeys[i]=j;
+			packedToUnpacked[i] = static_cast<int>(j);
 			j++;
 		}	
 	}
@@ -125,10 +132,27 @@ void PATTrackAndVertexUnpacker::produce(edm::StreamID, edm::Event & iEvent, cons
 						asso[ipv].push_back(j);
 					}
 				addTrackKeys[i] = j;
+				lostToUnpacked[i] = static_cast<int>(j);
 				j++;
 		}
 	}
 	edm::OrphanHandle< std::vector<reco::Track>  > oh = iEvent.put(std::move(outTks));
+
+	// Preserve source collection keys so SV constituents can be mapped through
+	// the later filtered-track selection without guessing from kinematics.
+	auto packedIndexMap = std::make_unique<edm::ValueMap<int>>();
+	edm::ValueMap<int>::Filler packedFiller(*packedIndexMap);
+	packedFiller.insert(cands, packedToUnpacked.begin(), packedToUnpacked.end());
+	packedFiller.fill();
+	iEvent.put(std::move(packedIndexMap), "packedTrackIndex");
+
+	auto lostIndexMap = std::make_unique<edm::ValueMap<int>>();
+	if (hasAdditionalTracks) {
+		edm::ValueMap<int>::Filler lostFiller(*lostIndexMap);
+		lostFiller.insert(addTracks, lostToUnpacked.begin(), lostToUnpacked.end());
+		lostFiller.fill();
+	}
+	iEvent.put(std::move(lostIndexMap), "lostTrackIndex");
 	
 	auto outPv = std::make_unique<std::vector<reco::Vertex>>();
 	
@@ -154,14 +178,17 @@ void PATTrackAndVertexUnpacker::produce(edm::StreamID, edm::Event & iEvent, cons
 		if(sv.daughterPtr(j).id() == cands.id()) {
 			// Daughter from PackedCandidate collection
 			// sv.daughterPtr(j).key() returns the index of the PackedCollection
-			r= TrackRef(oh,trackKeys[sv.daughterPtr(j).key()]); // use trackKeys because cand->track has gaps from neutral
-		} else {
+			auto found = trackKeys.find(sv.daughterPtr(j).key());
+			if (found != trackKeys.end()) r = TrackRef(oh, found->second);
+		} else if (hasAdditionalTracks && sv.daughterPtr(j).id() == addTracks.id()) {
 			// Daughter from additionalTracks collection
 //				std::cout << "vertex " << i << " using lost Track " << sv.daughterPtr(j).key()  << "  " << offsetAdd+sv.daughterPtr(j).key() << std::endl;  
-			r = TrackRef(oh, addTrackKeys[sv.daughterPtr(j).key()]);
+			auto found = addTrackKeys.find(sv.daughterPtr(j).key());
+			if (found != addTrackKeys.end()) r = TrackRef(oh, found->second);
 		}
-		TrackBaseRef rr(r);
-		outSv->back().add(rr);
+		// Preserve the original candidate's full daughter list in downstream
+		// tables; only add references here for daughters present in outTks.
+		if (r.isNonnull()) outSv->back().add(TrackBaseRef(r));
 
 		}	
 	}   

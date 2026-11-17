@@ -79,12 +79,17 @@ process.standardSVTable = svTable.clone(
     src=cms.InputTag("unpackedTracksAndVertices", "secondary"),
     pvSrc=cms.InputTag("unpackedTracksAndVertices"),
     filteredTrackIndex=cms.InputTag("filteredTracks", "filteredIndex"),
+    sourceSecondaryVertices=cms.InputTag("slimmedSecondaryVertices"),
+    unpackedTracks=cms.InputTag("unpackedTracksAndVertices"),
+    packedTrackIndex=cms.InputTag("unpackedTracksAndVertices", "packedTrackIndex"),
+    lostTrackIndex=cms.InputTag("unpackedTracksAndVertices", "lostTrackIndex"),
     dlenSigMin=cms.double(2.0),
 )
 process.gvMatchTable.pvSrc = cms.InputTag("unpackedTracksAndVertices")
 process.gvMatchTable.secondaryVertices = cms.InputTag(
     "unpackedTracksAndVertices", "secondary"
 )
+process.gvMatchTable.sourceSecondaryVertices = cms.InputTag("slimmedSecondaryVertices")
 process.gvMatchTable.tracks = cms.InputTag("filteredTracks")
 process.gvMatchTable.dlenSigMin = cms.double(2.0)
 

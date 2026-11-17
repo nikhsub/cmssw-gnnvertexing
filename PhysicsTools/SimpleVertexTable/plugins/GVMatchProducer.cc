@@ -2,10 +2,12 @@
 #include "FWCore/Framework/interface/stream/EDProducer.h"
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
+#include "FWCore/Utilities/interface/Exception.h"
 
 #include "DataFormats/NanoAOD/interface/FlatTable.h"
 #include "DataFormats/Math/interface/deltaR.h"
 #include "DataFormats/VertexReco/interface/Vertex.h"
+#include "DataFormats/Candidate/interface/VertexCompositePtrCandidate.h"
 #include "DataFormats/TrackReco/interface/Track.h"
 #include "TLorentzVector.h"
 #include "RecoVertex/VertexTools/interface/VertexDistance3D.h"
@@ -16,6 +18,7 @@
 #include <vector>
 #include <tuple>
 #include <cmath>
+#include <limits>
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
@@ -81,6 +84,8 @@ private:
 
     const edm::EDGetTokenT<std::vector<reco::Vertex>> pvs_;
     edm::EDGetTokenT<std::vector<reco::Vertex>> svToken_;
+    edm::EDGetTokenT<std::vector<reco::VertexCompositePtrCandidate>> sourceSVToken_;
+    bool useSourceSVConstituents_;
     edm::EDGetTokenT<std::vector<reco::Track>> tracksToken_;
 
     // Inputs from GenVertexProducer
@@ -111,6 +116,7 @@ private:
 GVMatchProducer::GVMatchProducer(const edm::ParameterSet& iConfig)
     : pvs_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("pvSrc"))),
       svToken_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("secondaryVertices"))),
+      useSourceSVConstituents_(iConfig.existsAs<edm::InputTag>("sourceSecondaryVertices")),
       tracksToken_(consumes<std::vector<reco::Track>>(iConfig.getParameter<edm::InputTag>("tracks"))),
       hadronGVxToken_(consumes<std::vector<float>>(iConfig.getParameter<edm::InputTag>("hadronGVx"))),
       hadronGVyToken_(consumes<std::vector<float>>(iConfig.getParameter<edm::InputTag>("hadronGVy"))),
@@ -138,6 +144,9 @@ GVMatchProducer::GVMatchProducer(const edm::ParameterSet& iConfig)
       trkMaxDPtRel_(iConfig.getParameter<double>("trkMaxDPtRel")),
       trkCheckCharge_(iConfig.getParameter<bool>("trkCheckCharge")),
       trkResolveAmbiguities_(iConfig.getParameter<bool>("trkResolveAmbiguities")) {
+    if (useSourceSVConstituents_)
+        sourceSVToken_ = consumes<std::vector<reco::VertexCompositePtrCandidate>>(
+            iConfig.getParameter<edm::InputTag>("sourceSecondaryVertices"));
     produces<nanoaod::FlatTable>("SVGVMatchTable");
     produces<nanoaod::FlatTable>("SVGVtrkMatchTable");
     produces<nanoaod::FlatTable>("GVMatchExtTable");        // extension=true, table name "GV"
@@ -147,6 +156,13 @@ GVMatchProducer::GVMatchProducer(const edm::ParameterSet& iConfig)
 void GVMatchProducer::produce(edm::Event& iEvent, const edm::EventSetup&) {
     edm::Handle<std::vector<reco::Vertex>> svHandle;
     iEvent.getByToken(svToken_, svHandle);
+    edm::Handle<std::vector<reco::VertexCompositePtrCandidate>> sourceSVHandle;
+    if (useSourceSVConstituents_) {
+        iEvent.getByToken(sourceSVToken_, sourceSVHandle);
+        if (sourceSVHandle->size() != svHandle->size())
+            throw cms::Exception("MismatchedSVCollections")
+                << "sourceSecondaryVertices and reco SV collections have different sizes";
+    }
     auto pvsIn = iEvent.getHandle(pvs_);
     edm::Handle<std::vector<reco::Track>> tracksHandle;
     iEvent.getByToken(tracksToken_, tracksHandle);
@@ -191,21 +207,34 @@ void GVMatchProducer::produce(edm::Event& iEvent, const edm::EventSetup&) {
     // save coordinates of SV (will be used for matching with GV)
     std::vector<float> SV_x, SV_y, SV_z, SV_eta, SV_phi;
     std::vector<CovMatrix> SV_cov;
-    for (auto const& sv : *secondaryVertices) {
+    for (size_t isv = 0; isv < secondaryVertices->size(); ++isv) {
+        const auto& sv = (*secondaryVertices)[isv];
         Measurement1D dl =
             vdist.distance(PV0, VertexState(RecoVertex::convertPos(sv.position()), RecoVertex::convertError(sv.error())));
-        if (dl.value() > 0 and dl.significance() > dlenSigMin_) {
+        if (dl.value() > 0 and dl.significance() > dlenSigMin_ &&
+            (!useSourceSVConstituents_ || (*sourceSVHandle)[isv].numberOfDaughters() >= 2)) {
             SV_x.push_back(sv.x());
             SV_y.push_back(sv.y());
             SV_z.push_back(sv.z());
 
             // Get Eta and Phi from tracks
-            TLorentzVector p4s_SV = TLorentzVector(0, 0, 0, 0);
-            for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
-                const edm::RefToBase<reco::Track>& trkRef = *it;
-                TLorentzVector p4;
-                p4.SetPtEtaPhiM(trkRef->pt(), trkRef->eta(), trkRef->phi(), 0.13957039);
-                p4s_SV += p4;
+            TLorentzVector p4s_SV(0, 0, 0, 0);
+            if (useSourceSVConstituents_) {
+                const auto& sourceSV = (*sourceSVHandle)[isv];
+                for (size_t idau = 0; idau < sourceSV.numberOfDaughters(); ++idau) {
+                    const auto* daughter = sourceSV.daughter(idau);
+                    if (!daughter) continue;
+                    TLorentzVector p4;
+                    p4.SetPtEtaPhiM(daughter->pt(), daughter->eta(), daughter->phi(), 0.13957039);
+                    p4s_SV += p4;
+                }
+            } else {
+                for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
+                    const edm::RefToBase<reco::Track>& trkRef = *it;
+                    TLorentzVector p4;
+                    p4.SetPtEtaPhiM(trkRef->pt(), trkRef->eta(), trkRef->phi(), 0.13957039);
+                    p4s_SV += p4;
+                }
             }
             SV_eta.push_back(p4s_SV.Eta());
             SV_phi.push_back(p4s_SV.Phi());
@@ -217,17 +246,30 @@ void GVMatchProducer::produce(edm::Event& iEvent, const edm::EventSetup&) {
     std::vector<float> SVtrk_pt, SVtrk_eta, SVtrk_phi;
     std::vector<int> SVtrk_SVidx;
     int SV_index = 0;
-    for (const auto& sv : *secondaryVertices) {
+    for (size_t isv = 0; isv < secondaryVertices->size(); ++isv) {
+        const auto& sv = (*secondaryVertices)[isv];
         Measurement1D dl =
             vdist.distance(PV0, VertexState(RecoVertex::convertPos(sv.position()), RecoVertex::convertError(sv.error())));
-        if (dl.value() > 0 and dl.significance() > dlenSigMin_) {
-            for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
-                const edm::RefToBase<reco::Track>& trkRef = *it;
-                if (trkRef.isNull()) continue;
-                SVtrk_pt.push_back(trkRef->pt());
-                SVtrk_eta.push_back(trkRef->eta());
-                SVtrk_phi.push_back(trkRef->phi());
-                SVtrk_SVidx.push_back(SV_index);
+        if (dl.value() > 0 and dl.significance() > dlenSigMin_ &&
+            (!useSourceSVConstituents_ || (*sourceSVHandle)[isv].numberOfDaughters() >= 2)) {
+            if (useSourceSVConstituents_) {
+                const auto& sourceSV = (*sourceSVHandle)[isv];
+                for (size_t idau = 0; idau < sourceSV.numberOfDaughters(); ++idau) {
+                    const auto* daughter = sourceSV.daughter(idau);
+                    SVtrk_pt.push_back(daughter ? daughter->pt() : std::numeric_limits<float>::quiet_NaN());
+                    SVtrk_eta.push_back(daughter ? daughter->eta() : std::numeric_limits<float>::quiet_NaN());
+                    SVtrk_phi.push_back(daughter ? daughter->phi() : std::numeric_limits<float>::quiet_NaN());
+                    SVtrk_SVidx.push_back(SV_index);
+                }
+            } else {
+                for (auto it = sv.tracks_begin(); it != sv.tracks_end(); ++it) {
+                    const edm::RefToBase<reco::Track>& trkRef = *it;
+                    if (trkRef.isNull()) continue;
+                    SVtrk_pt.push_back(trkRef->pt());
+                    SVtrk_eta.push_back(trkRef->eta());
+                    SVtrk_phi.push_back(trkRef->phi());
+                    SVtrk_SVidx.push_back(SV_index);
+                }
             }
             SV_index++;
         }
