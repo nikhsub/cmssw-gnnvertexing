@@ -33,6 +33,22 @@ modelInference = cms.EDProducer("modelInference",
     trackPairSrc = cms.InputTag("trackPairFeatures", "trackPair"),
     model_path = cms.FileInPath("PhysicsTools/data/best_20261001_142559.onnx"),
 )
+
+# Standalone AssociationGNN score producer for seed validation. Its embedded
+# ONNX normalization is authoritative; this module passes the shared raw 22/14
+# feature tensors and preserves event-local track/pair row alignment.
+trackGNNSeederInference = cms.EDProducer("TrackGNNSeederInferenceProducer",
+    src = cms.InputTag("filteredTracks"),
+    pvSrc = cms.InputTag("filteredTracks"),
+    beamSpot = cms.InputTag("offlineBeamSpot"),
+    muons = cms.InputTag("slimmedMuons"),
+    electrons = cms.InputTag("slimmedElectrons"),
+    dRMatchMax = cms.double(0.001),
+    relPtMatchMax = cms.double(0.2),
+    trackPairSrc = cms.InputTag("trackPairFeatures", "trackPair"),
+    model_path = cms.FileInPath("PhysicsTools/data/trackGNN_seeder_innorm_2311.onnx"),
+    saveEmbeddings = cms.bool(False),
+)
 trackPairFeatures = cms.EDProducer("TrackPairFeaturesProducer",
     tracks = cms.InputTag("filteredTracks"),
     primaryVertices = cms.InputTag("filteredTracks"),

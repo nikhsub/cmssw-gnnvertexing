@@ -3,6 +3,7 @@
 <use   name="FWCore/ParameterSet"/>
 <use   name="DataFormats/VertexReco"/>
 <use   name="DataFormats/TrackReco"/>
+<use   name="DataFormats/BeamSpot"/>
 <use   name="DataFormats/NanoAOD"/>
 <use   name="CommonTools/Utils"/>
 
@@ -42,6 +43,8 @@
 <use name="RecoBTag/FeatureTools"/>
 <use name="TrackingTools/Records"/>
 <use name="TrackingTools/TransientTrack"/>
+<use name="TrackingTools/IPTools"/>
+<use name="TrackingTools/PatternTools"/>
 <use name="GeneratorInterface/Pythia8Interface"/>
 <use name="GeneratorInterface/ExternalDecays"/>
 <use name="RecoBTag/ONNXRuntime"/>

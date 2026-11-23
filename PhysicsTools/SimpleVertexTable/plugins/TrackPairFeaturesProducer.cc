@@ -116,7 +116,7 @@ void TrackPairFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetu
 
   edm::Handle<std::vector<reco::Vertex>> pvH;
   iEvent.getByToken(pvToken_, pvH);
-  const reco::Vertex& pv = pvH->front();
+  const reco::Vertex* pv = pvH->empty() ? nullptr : &pvH->front();
 
   const auto& theB = iSetup.getData(ttbToken_);
 
@@ -189,16 +189,17 @@ void TrackPairFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetu
         dca_val = m.value();
         if (m.error() > 0) dcaSig_val = m.value() / m.error();
 
-        GlobalPoint cp(minDist.crossingPoint());
-        GlobalPoint pvp(pv.x(), pv.y(), pv.z());
         GlobalPoint seedPCA = minDist.points().second;
         GlobalPoint trackPCA = minDist.points().first;
-
-        pvToPCA1_val = (seedPCA - pvp).mag();
-        pvToPCA2_val = (trackPCA - pvp).mag();
-        cptopv_val = (cp - pvp).mag();
-        dot2_val = (trackPCA - pvp).unit().dot(t_trks[j].impactPointState().globalDirection().unit());
-        dot1_val = (seedPCA - pvp).unit().dot(t_trks[i].impactPointState().globalDirection().unit());
+        if (pv) {
+          GlobalPoint cp(minDist.crossingPoint());
+          GlobalPoint pvp(pv->x(), pv->y(), pv->z());
+          pvToPCA1_val = (seedPCA - pvp).mag();
+          pvToPCA2_val = (trackPCA - pvp).mag();
+          cptopv_val = (cp - pvp).mag();
+          dot2_val = (trackPCA - pvp).unit().dot(t_trks[j].impactPointState().globalDirection().unit());
+          dot1_val = (seedPCA - pvp).unit().dot(t_trks[i].impactPointState().globalDirection().unit());
+        }
 
         GlobalVector pairMomentum((Basic3DVector<float>)(t_trks[i].track().momentum() + t_trks[j].track().momentum()));
         pairMom_val = pairMomentum.mag();
@@ -235,8 +236,8 @@ void TrackPairFeaturesProducer::produce(edm::Event& iEvent, const edm::EventSetu
           fitResults.push_back(cached->second);
         } else {
           const auto fitStart = enableVertexFitTiming_ ? Clock::now() : Clock::time_point{};
-          const reco::Vertex* pv = (!pvH->empty() && !pvH->front().isFake()) ? &pvH->front() : nullptr;
-          auto result = twoTrackVertexFitter_->fit(t_trks[i], t_trks[j], tracks[i], tracks[j], pv, fitterTrackScratch);
+          const reco::Vertex* fitPV = (pv && !pv->isFake()) ? pv : nullptr;
+          auto result = twoTrackVertexFitter_->fit(t_trks[i], t_trks[j], tracks[i], tracks[j], fitPV, fitterTrackScratch);
           const auto fitEnd = enableVertexFitTiming_ ? Clock::now() : Clock::time_point{};
           if (enableVertexFitTiming_)
             fitTimeMs += std::chrono::duration<double, std::milli>(fitEnd - fitStart).count();
