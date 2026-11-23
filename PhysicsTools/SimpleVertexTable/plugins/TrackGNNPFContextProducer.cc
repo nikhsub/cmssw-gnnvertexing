@@ -154,10 +154,11 @@ void TrackGNNPFContextProducer::produce(edm::Event& event, const edm::EventSetup
     throw cms::Exception("TableSizeMismatch") << "SeederEmbedding has " << embeddings->size()
                                                 << " rows for " << filteredTracks->size() << " filtered tracks";
   }
-  const int* embeddingValid = nullptr;
+  std::vector<int> embeddingValid;
   if (embeddings.isValid()) {
     const auto embeddingTrackIdx = embeddings->columnData<int>(embeddings->columnIndex("trackIdx"));
-    embeddingValid = embeddings->columnData<int>(embeddings->columnIndex("valid"));
+    const auto embeddingValidColumn = embeddings->columnData<int>(embeddings->columnIndex("valid"));
+    embeddingValid.assign(embeddingValidColumn.begin(), embeddingValidColumn.end());
     for (size_t i = 0; i < embeddings->size(); ++i)
       if (embeddingTrackIdx[i] != static_cast<int>(i))
         throw cms::Exception("InvalidReference") << "SeederEmbedding trackIdx is not aligned with filteredTracks rows";
@@ -216,7 +217,7 @@ void TrackGNNPFContextProducer::produce(edm::Event& event, const edm::EventSetup
     sourceIndices.push_back(sourceIndex);
     unpackedIndices.push_back(mapping.unpacked);
     filteredIndices.push_back(mapping.filtered);
-    const bool embeddingOK = embeddingValid && mapping.filtered >= 0 &&
+    const bool embeddingOK = !embeddingValid.empty() && mapping.filtered >= 0 &&
                               embeddingValid[static_cast<size_t>(mapping.filtered)] == 1;
     embeddingValids.push_back(embeddingOK ? 1 : 0);
     if (mapping.filtered >= 0) ++chargedMapped;
