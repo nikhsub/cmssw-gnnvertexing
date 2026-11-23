@@ -23,7 +23,6 @@ using namespace cms::Ort;
 #include <iostream>
 #include <cmath>
 #include <limits>
-#include <array>
 #include <string>
 #include <sstream>
 #include "DataFormats/Common/interface/Wrapper.h"
@@ -56,7 +55,6 @@ private:
   bool saveEmbeddings_;
 
   static constexpr float PION_MASS = 0.13957018f;
-  static constexpr int N_NODE_CLASSES = 6;  // sv_pred's output width (GraphEventGNN.sv_pred -> 6-way)
 };
 
 TrackGNNSeederInferenceProducer::TrackGNNSeederInferenceProducer(const edm::ParameterSet& iConfig, const ONNXRuntime*):
@@ -108,8 +106,8 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
     const size_t num_tracks = tracks->size();
     std::vector<int> nodeValid(num_tracks, 0), embeddingValid(num_tracks, 0);
     std::vector<int> originalTrackIdx(num_tracks);
-    std::vector<float> nodeLogits(num_tracks * N_NODE_CLASSES, -1.f);
-    std::vector<float> nodeProbabilities(num_tracks * N_NODE_CLASSES, -1.f);
+    std::vector<float> nodeLogits(num_tracks, -1.f);
+    std::vector<float> nodeScores(num_tracks, -1.f);
     std::vector<float> nodeEmbeddings(num_tracks * 128, -1.f);
     std::vector<int> edgeValid(nPairs, 0);
     std::vector<float> edgeLogits(nPairs, -1.f), edgeProbabilities(nPairs, -1.f);
@@ -119,15 +117,10 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
         auto nodeTable = std::make_unique<nanoaod::FlatTable>(num_tracks, "SeederNode", false);
         nodeTable->addColumn<int>("trackIdx", originalTrackIdx, "row index in the original filteredTracks collection");
         nodeTable->addColumn<int>("valid", nodeValid, "1 if finite node model outputs were produced, else 0");
-        for (int k = 0; k < N_NODE_CLASSES; ++k) {
-            std::vector<float> logits(num_tracks), probabilities(num_tracks);
-            for (size_t i = 0; i < num_tracks; ++i) {
-                logits[i] = nodeLogits[i * N_NODE_CLASSES + k];
-                probabilities[i] = nodeProbabilities[i * N_NODE_CLASSES + k];
-            }
-            nodeTable->addColumn<float>("logit" + std::to_string(k), logits, "raw ONNX node class logit; -1 when invalid");
-            nodeTable->addColumn<float>("prob" + std::to_string(k), probabilities, "six-class softmax probability; -1 when invalid");
-        }
+        nodeTable->addColumn<float>("logit", nodeLogits,
+                                    "raw binary logit for accepted generator-level hadron-decay membership; -1 when invalid");
+        nodeTable->addColumn<float>("score", nodeScores,
+                                    "sigmoid binary hadron-association score; not prompt-D-specific or necessarily calibrated; -1 when invalid");
         iEvent.put(std::move(nodeTable), "SeederNode");
 
         if (saveEmbeddings_) {
@@ -445,7 +438,7 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
     };
     std::vector<std::vector<float>> data = {x_in_flat, edge_index_flat_f, edge_attr_flat};
     const auto output = globalCache()->run(input_names, data, input_shapes, output_names);
-    const size_t expectedNodeLogits = track_features.size() * N_NODE_CLASSES;
+    const size_t expectedNodeLogits = track_features.size();
     const size_t expectedEdgeLogits = edge_i.size();
     const size_t expectedEmbeddings = track_features.size() * 128;
     const bool outputSizesValid = output.size() == 3 && output[0].size() == expectedNodeLogits &&
@@ -477,23 +470,6 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
     const auto& rawNodeLogits = output[0];
     const auto& rawEdgeLogits = output[1];
     const auto& rawEmbeddings = output[2];
-    auto softmaxNode = [&](size_t node) -> std::array<float, N_NODE_CLASSES> {
-        std::array<float, N_NODE_CLASSES> probabilities{};
-        float maximum = -std::numeric_limits<float>::infinity();
-        for (int k = 0; k < N_NODE_CLASSES; ++k) {
-            const float value = rawNodeLogits[node * N_NODE_CLASSES + k];
-            if (!std::isfinite(value)) return probabilities;
-            maximum = std::max(maximum, value);
-        }
-        float denominator = 0.f;
-        for (int k = 0; k < N_NODE_CLASSES; ++k) {
-            probabilities[k] = std::exp(rawNodeLogits[node * N_NODE_CLASSES + k] - maximum);
-            denominator += probabilities[k];
-        }
-        if (!(denominator > 0.f) || !std::isfinite(denominator)) return {};
-        for (float& value : probabilities) value /= denominator;
-        return probabilities;
-    };
     const auto sigmoid = [](float value) {
         if (value >= 0.f) return 1.f / (1.f + std::exp(-value));
         const float expValue = std::exp(value);
@@ -502,21 +478,17 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
 
     for (size_t ni = 0; ni < nodeToOrig.size(); ++ni) {
         const size_t original = static_cast<size_t>(nodeToOrig[ni]);
-        const auto probabilities = softmaxNode(ni);
-        bool valid = true;
-        for (int k = 0; k < N_NODE_CLASSES; ++k) {
-            if (!std::isfinite(rawNodeLogits[ni * N_NODE_CLASSES + k]) || !std::isfinite(probabilities[k])) valid = false;
-        }
+        const float logit = rawNodeLogits[ni];
+        const float score = sigmoid(logit);
+        const bool valid = std::isfinite(logit) && std::isfinite(score);
         bool embeddingIsValid = true;
         for (int k = 0; k < 128; ++k) {
             if (!std::isfinite(rawEmbeddings[ni * 128 + k])) embeddingIsValid = false;
         }
         if (valid) {
             nodeValid[original] = 1;
-            for (int k = 0; k < N_NODE_CLASSES; ++k) {
-                nodeLogits[original * N_NODE_CLASSES + k] = rawNodeLogits[ni * N_NODE_CLASSES + k];
-                nodeProbabilities[original * N_NODE_CLASSES + k] = probabilities[k];
-            }
+            nodeLogits[original] = logit;
+            nodeScores[original] = score;
         }
         if (embeddingIsValid) {
             embeddingValid[original] = 1;
