@@ -51,6 +51,13 @@ trackGNNSeederInference = cms.EDProducer("TrackGNNSeederInferenceProducer",
     model_path = cms.FileInPath("PhysicsTools/data/trackGNN_seeder_innorm_2311.onnx"),
     saveEmbeddings = cms.bool(False),
 )
+trackGNNSeedProducer = cms.EDProducer("TrackGNNSeedProducer",
+    tracks = cms.InputTag("filteredTracks"),
+    primaryVertices = cms.InputTag("filteredTracks"),
+    trackPairSrc = cms.InputTag("trackPairFeatures", "trackPair"),
+    seederPairSrc = cms.InputTag("trackGNNSeederInference", "trackPair"),
+    maxSeeds = cms.uint32(128),
+)
 trackPairFeatures = cms.EDProducer("TrackPairFeaturesProducer",
     tracks = cms.InputTag("filteredTracks"),
     primaryVertices = cms.InputTag("filteredTracks"),

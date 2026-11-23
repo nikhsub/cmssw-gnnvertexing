@@ -1,7 +1,7 @@
 """Validation NanoAOD with simplelabel and standard MiniAOD IVF SVs.
 
 This is the validation counterpart to simplelabel_pair_vertex_fit_cfg.py. It
-keeps the simplelabel track/pair truth and pair-fit outputs, and adds SV
+keeps the simplelabel track/pair truth and top-ranked seed-fit outputs, and adds SV
 properties, constituent tracks, and GV matching for the standard
 slimmedSecondaryVertices collection. It does not rerun the score-based IVF.
 """
@@ -23,6 +23,13 @@ options.register(
     VarParsing.multiplicity.singleton,
     VarParsing.varType.bool,
     "Write the optional 128-component seeder embedding table",
+)
+options.register(
+    "maxSeeds",
+    128,
+    VarParsing.multiplicity.singleton,
+    VarParsing.varType.int,
+    "Maximum number of top-ranked physical pairs to fit per event",
 )
 options.parseArguments()
 
@@ -65,6 +72,7 @@ from PhysicsTools.SimpleVertexTable.sv_reco_cff import (
     trackPairFeatures,
     trackPairLabels,
     trackGNNSeederInference,
+    trackGNNSeedProducer,
     svTable,
 )
 
@@ -75,13 +83,16 @@ from PhysicsTools.SimpleVertexTable.genVertices import custom_GV_producer
 process = custom_GV_producer(process, collection="track")
 
 process.trackPairFeatures = trackPairFeatures.clone(
-    enableTwoTrackVertexFit=cms.bool(True),
+    enableTwoTrackVertexFit=cms.bool(False),
     enableVertexFitTiming=cms.bool(False),
 )
 # Inference consumes the same directed trackPair table, including its feature
-# columns and pair-row order. Pair-fit columns are ignored by the GNN input.
+# columns and pair-row order. The seed producer performs fits after ranking.
 process.trackGNNSeederInference = trackGNNSeederInference.clone(
     saveEmbeddings=cms.bool(options.saveEmbeddings),
+)
+process.trackGNNSeedProducer = trackGNNSeedProducer.clone(
+    maxSeeds=cms.uint32(options.maxSeeds),
 )
 process.trackPairLabels = trackPairLabels.clone()
 
@@ -108,10 +119,16 @@ process.gvMatchTable.dlenSigMin = cms.double(2.0)
 
 process.validationPath = cms.Path(
     process.customMergedGenParticles
-    * process.sv_track
-    * process.genVertexTable
+    * process.unpackedTracksAndVertices
+    * process.filteredTracks
+    * process.trackVertexVars
     * process.trackPairFeatures
     * process.trackGNNSeederInference
+    * process.trackGNNSeedProducer
+    # MC truth matching and table outputs follow the truth-independent ranking/fits.
+    * process.trackGenMatch
+    * process.trackTable
+    * process.genVertexTable
     * process.trackPairLabels
     * process.standardSVTable
     * process.gvMatchTable
@@ -127,12 +144,14 @@ process.nanoOut = cms.OutputModule(
         # Reconstructed track features and simplelabel truth labels.
         "keep nanoaodFlatTable_trackTable_*_*",
         "keep nanoaodFlatTable_trackPairLabels_track_*",
-        # Selected ordered pairs, fit observables, and same-order edge labels.
+        # Original directed pairs and GNN predictions, without all-pair fits.
         "keep nanoaodFlatTable_trackPairFeatures_*_*",
         # GNN node outputs, optional embeddings, and the same-row-order
         # trackPair score extension (merged with the original trackPair table).
         "keep nanoaodFlatTable_trackGNNSeederInference_*_*",
         "keep nanoaodFlatTable_trackPairLabels_trackPair_*",
+        # Top-K unique pairs and fits performed only for selected seeds.
+        "keep nanoaodFlatTable_trackGNNSeedProducer_*_*",
         # Standard slimmed IVF SV properties, PV properties, and constituents.
         "keep nanoaodFlatTable_standardSVTable_*_*",
         # GV-SV matches, matched SV constituents, and daughter-to-track matches.

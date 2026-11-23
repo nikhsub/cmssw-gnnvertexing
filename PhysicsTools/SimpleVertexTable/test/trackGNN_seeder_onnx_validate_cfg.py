@@ -16,6 +16,8 @@ options.register("isMC", True, VarParsing.multiplicity.singleton,
                  VarParsing.varType.bool, "Input is simulated MC")
 options.register("saveEmbeddings", True, VarParsing.multiplicity.singleton,
                  VarParsing.varType.bool, "Write optional 128D node embeddings")
+options.register("maxSeeds", 128, VarParsing.multiplicity.singleton,
+                 VarParsing.varType.int, "Maximum number of top-ranked physical pairs to fit per event")
 options.parseArguments()
 
 # A known MiniAODSIM file used by this package. Override with inputFiles=... on
@@ -48,6 +50,7 @@ from PhysicsTools.SimpleVertexTable.sv_reco_cff import (
     custom_sv_tracks_training,
     trackPairFeatures,
     trackGNNSeederInference,
+    trackGNNSeedProducer,
 )
 
 if options.isMC:
@@ -71,8 +74,12 @@ process.trackPairFeatures = trackPairFeatures.clone(
 process.trackGNNSeederInference = trackGNNSeederInference.clone(
     saveEmbeddings=cms.bool(options.saveEmbeddings),
 )
+process.trackGNNSeedProducer = trackGNNSeedProducer.clone(
+    maxSeeds=cms.uint32(options.maxSeeds),
+)
 
-modules = process.sv_track * process.trackPairFeatures * process.trackGNNSeederInference
+modules = (process.sv_track * process.trackPairFeatures * process.trackGNNSeederInference
+           * process.trackGNNSeedProducer)
 if options.isMC:
     process.seederPath = cms.Path(process.customMergedGenParticles * modules)
 else:
@@ -86,6 +93,7 @@ process.nanoOut = cms.OutputModule(
         "keep nanoaodFlatTable_trackTable_*_*",
         "keep nanoaodFlatTable_trackPairFeatures_*_*",
         "keep nanoaodFlatTable_trackGNNSeederInference_*_*",
+        "keep nanoaodFlatTable_trackGNNSeedProducer_*_*",
     ),
 )
 process.end = cms.EndPath(process.nanoOut)
