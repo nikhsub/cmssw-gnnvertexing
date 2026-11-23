@@ -17,6 +17,13 @@ options.register(
     VarParsing.varType.string,
     "Validation NanoAOD ROOT file",
 )
+options.register(
+    "saveEmbeddings",
+    True,
+    VarParsing.multiplicity.singleton,
+    VarParsing.varType.bool,
+    "Write the optional 128-component seeder embedding table",
+)
 options.parseArguments()
 
 default_input = (
@@ -57,6 +64,7 @@ from PhysicsTools.SimpleVertexTable.sv_reco_cff import (
     custom_sv_tracks_training,
     trackPairFeatures,
     trackPairLabels,
+    trackGNNSeederInference,
     svTable,
 )
 
@@ -69,6 +77,11 @@ process = custom_GV_producer(process, collection="track")
 process.trackPairFeatures = trackPairFeatures.clone(
     enableTwoTrackVertexFit=cms.bool(True),
     enableVertexFitTiming=cms.bool(False),
+)
+# Inference consumes the same directed trackPair table, including its feature
+# columns and pair-row order. Pair-fit columns are ignored by the GNN input.
+process.trackGNNSeederInference = trackGNNSeederInference.clone(
+    saveEmbeddings=cms.bool(options.saveEmbeddings),
 )
 process.trackPairLabels = trackPairLabels.clone()
 
@@ -98,6 +111,7 @@ process.validationPath = cms.Path(
     * process.sv_track
     * process.genVertexTable
     * process.trackPairFeatures
+    * process.trackGNNSeederInference
     * process.trackPairLabels
     * process.standardSVTable
     * process.gvMatchTable
@@ -115,6 +129,9 @@ process.nanoOut = cms.OutputModule(
         "keep nanoaodFlatTable_trackPairLabels_track_*",
         # Selected ordered pairs, fit observables, and same-order edge labels.
         "keep nanoaodFlatTable_trackPairFeatures_*_*",
+        # GNN node outputs, optional embeddings, and the same-row-order
+        # trackPair score extension (merged with the original trackPair table).
+        "keep nanoaodFlatTable_trackGNNSeederInference_*_*",
         "keep nanoaodFlatTable_trackPairLabels_trackPair_*",
         # Standard slimmed IVF SV properties, PV properties, and constituents.
         "keep nanoaodFlatTable_standardSVTable_*_*",

@@ -2,30 +2,22 @@
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/Framework/interface/MakerMacros.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
-#include "FWCore/Utilities/interface/isFinite.h"
 #include "FWCore/Utilities/interface/Exception.h"
 #include "DataFormats/Common/interface/ValueMap.h"
 #include "DataFormats/NanoAOD/interface/FlatTable.h"
 #include "DataFormats/TrackReco/interface/Track.h"
+#include "DataFormats/TrackReco/interface/TrackBase.h"
 #include "DataFormats/TrackReco/interface/TrackFwd.h"
 
 #include "DataFormats/VertexReco/interface/Vertex.h"
 #include "DataFormats/VertexReco/interface/VertexFwd.h"
-#include "DataFormats/BeamSpot/interface/BeamSpot.h"
-#include "DataFormats/PatCandidates/interface/Muon.h"
-#include "DataFormats/PatCandidates/interface/Electron.h"
-#include "DataFormats/Math/interface/deltaR.h"
-#include "TrackingTools/IPTools/interface/IPTools.h"
 #include "TrackingTools/TransientTrack/interface/TransientTrackBuilder.h"
 #include "TrackingTools/Records/interface/TransientTrackRecord.h"
 #include "PhysicsTools/ONNXRuntime/interface/ONNXRuntime.h"
 using namespace cms::Ort;
-#include <iostream>
 #include <cmath>
-#include <limits>
 #include <string>
 #include <sstream>
-#include "DataFormats/Common/interface/Wrapper.h"
 #include <vector>
 #include <algorithm>
 
@@ -40,33 +32,32 @@ public:
 private:
   edm::EDGetTokenT<reco::TrackCollection> tracksToken_;
   edm::EDGetTokenT<std::vector<reco::Vertex>> pvsToken_;
-  edm::EDGetTokenT<reco::BeamSpot> beamSpotToken_;
-  edm::EDGetTokenT<std::vector<pat::Muon>> muonsToken_;
-  edm::EDGetTokenT<std::vector<pat::Electron>> electronsToken_;
+  edm::EDGetTokenT<edm::ValueMap<int>> passSeedToken_;
+  edm::EDGetTokenT<edm::ValueMap<float>> dzToken_;
+  edm::EDGetTokenT<edm::ValueMap<float>> dzSignificanceToken_;
+  edm::EDGetTokenT<edm::ValueMap<float>> ip2dSignificanceToken_;
+  edm::EDGetTokenT<edm::ValueMap<float>> ip2dValueToken_;
+  edm::EDGetTokenT<edm::ValueMap<float>> ip3dSignificanceToken_;
+  edm::EDGetTokenT<edm::ValueMap<float>> ip3dValueToken_;
   edm::EDGetTokenT<nanoaod::FlatTable> trackPairToken_;  // TrackPairFeaturesProducer's output
   edm::ESGetToken<TransientTrackBuilder, TransientTrackRecord> theTTBToken;
 
-  // Same style/meaning as TrackVertexVars' lepton-match window. IMPORTANT: the *training*
-  // config (trackVertexVars_cfi in the python fragment) sets these to 0.001 / 0.2, which
-  // differ from TrackVertexVars.cc's own fillDescriptions() defaults (0.01 / 0.1). Match
-  // whatever was actually used in the ntuple production for these values.
-  double dRMatchMax_;
-  double relPtMatchMax_;
   bool saveEmbeddings_;
 
-  static constexpr float PION_MASS = 0.13957018f;
 };
 
 TrackGNNSeederInferenceProducer::TrackGNNSeederInferenceProducer(const edm::ParameterSet& iConfig, const ONNXRuntime*):
   tracksToken_(consumes<reco::TrackCollection>(iConfig.getParameter<edm::InputTag>("src"))),
   pvsToken_(consumes<std::vector<reco::Vertex>>(iConfig.getParameter<edm::InputTag>("pvSrc"))),
-  beamSpotToken_(consumes<reco::BeamSpot>(iConfig.getParameter<edm::InputTag>("beamSpot"))),
-  muonsToken_(consumes<std::vector<pat::Muon>>(iConfig.getParameter<edm::InputTag>("muons"))),
-  electronsToken_(consumes<std::vector<pat::Electron>>(iConfig.getParameter<edm::InputTag>("electrons"))),
+  passSeedToken_(consumes<edm::ValueMap<int>>(iConfig.getParameter<edm::InputTag>("passSeedSrc"))),
+  dzToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("dzSrc"))),
+  dzSignificanceToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("dzSignificanceSrc"))),
+  ip2dSignificanceToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("ip2dSignificanceSrc"))),
+  ip2dValueToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("ip2dValueSrc"))),
+  ip3dSignificanceToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("ip3dSignificanceSrc"))),
+  ip3dValueToken_(consumes<edm::ValueMap<float>>(iConfig.getParameter<edm::InputTag>("ip3dValueSrc"))),
   trackPairToken_(consumes<nanoaod::FlatTable>(iConfig.getParameter<edm::InputTag>("trackPairSrc"))),
   theTTBToken(esConsumes<TransientTrackBuilder, TransientTrackRecord>(edm::ESInputTag("", "TransientTrackBuilder"))),
-  dRMatchMax_(iConfig.getParameter<double>("dRMatchMax")),
-  relPtMatchMax_(iConfig.getParameter<double>("relPtMatchMax")),
   saveEmbeddings_(iConfig.getParameter<bool>("saveEmbeddings"))
 {
     produces<nanoaod::FlatTable>("SeederNode");
@@ -88,18 +79,29 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
     iEvent.getByToken(tracksToken_, tracks);
     edm::Handle<std::vector<reco::Vertex>> pvs;
     iEvent.getByToken(pvsToken_, pvs);
-    edm::Handle<reco::BeamSpot> beamSpot;
-    iEvent.getByToken(beamSpotToken_, beamSpot);
-    edm::Handle<std::vector<pat::Muon>> muons;
-    iEvent.getByToken(muonsToken_, muons);
-    edm::Handle<std::vector<pat::Electron>> electrons;
-    iEvent.getByToken(electronsToken_, electrons);
+    edm::Handle<edm::ValueMap<int>> passSeedMap;
+    iEvent.getByToken(passSeedToken_, passSeedMap);
+    edm::Handle<edm::ValueMap<float>> dzMap;
+    iEvent.getByToken(dzToken_, dzMap);
+    edm::Handle<edm::ValueMap<float>> dzSignificanceMap;
+    iEvent.getByToken(dzSignificanceToken_, dzSignificanceMap);
+    edm::Handle<edm::ValueMap<float>> ip2dSignificanceMap;
+    iEvent.getByToken(ip2dSignificanceToken_, ip2dSignificanceMap);
+    edm::Handle<edm::ValueMap<float>> ip2dValueMap;
+    iEvent.getByToken(ip2dValueToken_, ip2dValueMap);
+    edm::Handle<edm::ValueMap<float>> ip3dSignificanceMap;
+    iEvent.getByToken(ip3dSignificanceToken_, ip3dSignificanceMap);
+    edm::Handle<edm::ValueMap<float>> ip3dValueMap;
+    iEvent.getByToken(ip3dValueToken_, ip3dValueMap);
     edm::Handle<nanoaod::FlatTable> pairTable;
     iEvent.getByToken(trackPairToken_, pairTable);
 
 
-    if (!tracks.isValid() || !pairTable.isValid() || !beamSpot.isValid() || !muons.isValid() || !electrons.isValid()) {
-        throw cms::Exception("ProductNotFound") << "TrackGNNSeederInferenceProducer requires valid track, pair, beam-spot, muon, and electron inputs";
+    if (!tracks.isValid() || !pairTable.isValid() || !passSeedMap.isValid() || !dzMap.isValid() ||
+        !dzSignificanceMap.isValid() || !ip2dSignificanceMap.isValid() || !ip2dValueMap.isValid() ||
+        !ip3dSignificanceMap.isValid() || !ip3dValueMap.isValid()) {
+        throw cms::Exception("ProductNotFound")
+            << "TrackGNNSeederInferenceProducer requires tracks, trackPair, and all configured TrackVertexVars ValueMaps";
     }
 
     const size_t nPairs = pairTable->size();
@@ -146,24 +148,14 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
         putTables();
         return;
     }
-    const auto& PV0 = pvs->front();
     const auto& ttBuilder = iSetup.getData(theTTBToken);
 
-
-    // retrieve information of tracks. Everything here mirrors TrackVertexVars.cc exactly
-    // (same PV, same setBeamSpot call, same IPTools entry points, same dz-significance
-    // formula) so that inference features match what the model was trained on.
-    std::vector<float> trk_pt, trk_eta, trk_phi;
-    std::vector<float> trk_dz, trk_dzSignificance;
-    std::vector<float> trk_ip2dValue, trk_ip2dSignificance, trk_ip3dValue, trk_ip3dSignificance;
-    std::vector<float> trk_p, trk_charge, trk_energy, trk_chi2;
-    std::vector<float> trk_numberOfValidHits, trk_numberOfValidPixelHits, trk_numberOfValidStripHits;
+    // Node inputs follow the optimized checkpoint's HDF5 feature order exactly.
+    std::vector<float> trk_isHighPurity, trk_charge, trk_nHits, trk_nPixelHits, trk_nStripHits;
+    std::vector<float> trk_passSeed, trk_chi2, trk_energy, trk_eta, trk_phi, trk_pt;
     std::vector<float> trk_px, trk_py, trk_pz, trk_qdotp, trk_qoverp;
-    std::vector<float> trk_isElectron, trk_isMuon;
-
-    std::vector<float> track_SVscore;
-
-    track_SVscore.reserve(num_tracks);
+    std::vector<float> trk_dz, trk_dzSignificance;
+    std::vector<float> trk_ip2dSignificance, trk_ip2dValue, trk_ip3dSignificance, trk_ip3dValue;
 
     std::vector<int> origToNode(num_tracks, -1); // length of tracks. -1 for non valid ttrk. otherwise counts 0,1, 2, -1, 3, ..
     std::vector<int> nodeToOrig;
@@ -180,85 +172,31 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
         origToNode[i] = node;
         nodeToOrig.push_back((int)i);
 
-        trk_pt.push_back(trk.pt());
+        const reco::TrackRef trackRef(tracks, i);
+        trk_isHighPurity.push_back(trk.quality(reco::TrackBase::highPurity) ? 1.f : 0.f);
+        trk_charge.push_back(trk.charge());
+        trk_nHits.push_back(trk.hitPattern().numberOfValidHits());
+        trk_nPixelHits.push_back(trk.hitPattern().numberOfValidPixelHits());
+        trk_nStripHits.push_back(trk.hitPattern().numberOfValidStripHits());
+        trk_passSeed.push_back(static_cast<float>((*passSeedMap)[trackRef]));
+        trk_chi2.push_back(trk.chi2());
+        trk_energy.push_back(std::sqrt(trk.p() * trk.p() + 0.13957 * 0.13957));
         trk_eta.push_back(trk.eta());
         trk_phi.push_back(trk.phi());
-        trk_p.push_back(trk.p());
-        trk_charge.push_back(trk.charge());
-        trk_numberOfValidHits.push_back(trk.numberOfValidHits());
-        trk_numberOfValidPixelHits.push_back(trk.hitPattern().numberOfValidPixelHits());
-        trk_numberOfValidStripHits.push_back(trk.hitPattern().numberOfValidStripHits());
-        trk_energy.push_back(std::sqrt(trk.p() * trk.p() + PION_MASS * PION_MASS));
-        trk_chi2.push_back(trk.chi2());
+        trk_pt.push_back(trk.pt());
         trk_px.push_back(trk.px());
         trk_py.push_back(trk.py());
         trk_pz.push_back(trk.pz());
         trk_qdotp.push_back(trk.charge() * trk.p());
         trk_qoverp.push_back(trk.qoverp());
-
-        // dz / dz significance -- identical formula to TrackVertexVars.cc
-        float dzVal = trk.dz(PV0.position());
-        float dzErr = std::sqrt(std::pow(trk.dzError(), 2) + PV0.covariance(2, 2));
-        trk_dz.push_back(dzVal);
-        trk_dzSignificance.push_back((dzErr > 0.f && std::isfinite(dzErr)) ? dzVal / dzErr : -9999.f);
-
-        // IP2D / IP3D -- same IPTools entry points as TrackVertexVars.cc, same
-        // setBeamSpot call beforehand (this was missing before and changes the result)
-        ttrk.setBeamSpot(*beamSpot);
-
-        float ip2dVal = -9999.f, ip2dSig = -9999.f;
-        std::pair<bool, Measurement1D> ip2d = IPTools::absoluteTransverseImpactParameter(ttrk, PV0);
-        if (ip2d.first) {
-            if (edm::isFinite(ip2d.second.value())) ip2dVal = ip2d.second.value();
-            if (edm::isFinite(ip2d.second.significance())) ip2dSig = ip2d.second.significance();
-        }
-        trk_ip2dValue.push_back(ip2dVal);
-        trk_ip2dSignificance.push_back(ip2dSig);
-
-        float ip3dVal = -9999.f, ip3dSig = -9999.f;
-        std::pair<bool, Measurement1D> ip3d = IPTools::absoluteImpactParameter3D(ttrk, PV0);
-        if (ip3d.first) {
-            if (edm::isFinite(ip3d.second.value())) ip3dVal = ip3d.second.value();
-            if (edm::isFinite(ip3d.second.significance())) ip3dSig = ip3d.second.significance();
-        }
-        trk_ip3dValue.push_back(ip3dVal);
-        trk_ip3dSignificance.push_back(ip3dSig);
+        trk_dz.push_back((*dzMap)[trackRef]);
+        trk_dzSignificance.push_back((*dzSignificanceMap)[trackRef]);
+        trk_ip2dSignificance.push_back((*ip2dSignificanceMap)[trackRef]);
+        trk_ip2dValue.push_back((*ip2dValueMap)[trackRef]);
+        trk_ip3dSignificance.push_back((*ip3dSignificanceMap)[trackRef]);
+        trk_ip3dValue.push_back((*ip3dValueMap)[trackRef]);
 
         node++;
-    }
-
-    // Track-lepton matching (isMuon / isElectron) -- same best-dR-within-relPt-window
-    // logic as TrackVertexVars.cc, using the SAME dRMatchMax/relPtMatchMax values as
-    // the training-time trackVertexVars configuration (pass 0.001 / 0.2 in the cfi,
-    // not TrackVertexVars.cc's own fillDescriptions defaults of 0.01 / 0.1).
-    trk_isMuon.assign(node, 0.f);
-    trk_isElectron.assign(node, 0.f);
-    for (int ni = 0; ni < node; ++ni) {
-        int oi = nodeToOrig[ni];
-        const auto& trk = (*tracks)[oi];
-        float trkEta = trk.eta();
-        float trkPhi = trk.phi();
-        float trkPt = trk.pt();
-
-        float bestDR_mu = std::numeric_limits<float>::infinity();
-        for (const auto& mu : *muons) {
-            float ptRatio = std::abs(trkPt - mu.pt()) / mu.pt();
-            if (ptRatio > relPtMatchMax_) continue;
-            float dr = reco::deltaR(trkEta, trkPhi, mu.eta(), mu.phi());
-            if (dr >= dRMatchMax_ || dr >= bestDR_mu) continue;
-            bestDR_mu = dr;
-            trk_isMuon[ni] = 1.f;
-        }
-
-        float bestDR_e = std::numeric_limits<float>::infinity();
-        for (const auto& ele : *electrons) {
-            float ptRatio = std::abs(trkPt - ele.pt()) / ele.pt();
-            if (ptRatio > relPtMatchMax_) continue;
-            float dr = reco::deltaR(trkEta, trkPhi, ele.eta(), ele.phi());
-            if (dr >= dRMatchMax_ || dr >= bestDR_e) continue;
-            bestDR_e = dr;
-            trk_isElectron[ni] = 1.f;
-        }
     }
 
     // Edge (track-pair) features now come straight from TrackPairFeaturesProducer's
@@ -318,57 +256,48 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
     }
 
 
-    // === Assemble the exact raw 22 node features used by the established training path.
-    // The ONNX graph embeds the training normalization; do not normalize here.
+    // Assemble raw node/edge feature rows in the exact optimized-checkpoint HDF5
+    // order. The ONNX graph embeds normalization; do not normalize here.
     std::vector<std::vector<float>> track_features;
     static constexpr int N_NODE_FEATURES = 22;
     static constexpr int N_EDGE_FEATURES = 14;
 
     for (int ni = 0; ni < node; ++ni) {
+        // [0..21] = isHighPurity, charge, nHits, pixelHits, stripHits,
+        // passSeed, chi2, energy, eta, phi, pt, px, py, pz, qdotp,
+        // qoverp, dz, dzSignificance, ip2dSignificance, ip2dValue,
+        // ip3dSignificance, ip3dValue.
         std::vector<float> features = {
-            trk_pt[ni],
+            trk_isHighPurity[ni],
+            trk_charge[ni],
+            trk_nHits[ni],
+            trk_nPixelHits[ni],
+            trk_nStripHits[ni],
+            trk_passSeed[ni],
+            trk_chi2[ni],
+            trk_energy[ni],
             trk_eta[ni],
             trk_phi[ni],
+            trk_pt[ni],
+            trk_px[ni],
+            trk_py[ni],
+            trk_pz[ni],
+            trk_qdotp[ni],
+            trk_qoverp[ni],
             trk_dz[ni],
             trk_dzSignificance[ni],
             trk_ip2dSignificance[ni],
             trk_ip2dValue[ni],
             trk_ip3dSignificance[ni],
             trk_ip3dValue[ni],
-            trk_numberOfValidHits[ni],
-            trk_charge[ni],
-            trk_energy[ni],
-            trk_chi2[ni],
-            trk_numberOfValidStripHits[ni],
-            trk_numberOfValidPixelHits[ni],
-            trk_px[ni],
-            trk_py[ni],
-            trk_pz[ni],
-            trk_qdotp[ni],
-            trk_qoverp[ni],
-            trk_isElectron[ni],
-            trk_isMuon[ni],
         };
 
-        bool has_nan = false;
-        for (float val : features) {
-            if (!std::isfinite(val)) {
-                has_nan = true;
-                break;
-            }
+        // Match the HDF5 feature builder component-by-component. Keep finite
+        // sentinel values (for example -9999) unchanged.
+        for (float& value : features) {
+            if (!std::isfinite(value)) value = 0.f;
         }
-
-        if (has_nan) {
-            // Whole-track invalid sentinel. This is the -999.0 that GraphEventGNN.forward()
-            // checks on feature[0] (track_pt) to mask the node with the model's learned
-            // dummy token -- confirm this matches whatever DatasetConstructorTask pads
-            // invalid/missing tracks with in cpf_arr, since it's a DIFFERENT convention
-            // from the per-quantity -9999.f sentinel used above for individual IP/dz
-            // failures on an otherwise-valid track.
-            features.assign(N_NODE_FEATURES, -999.0f);
-        }
-
-        track_features.push_back(features);
+        track_features.push_back(std::move(features));
     }
 
     // Build edge_index / per-edge feature rows from the (already column-name-matched)
@@ -385,22 +314,30 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
         edge_i.push_back(ni);
         edge_j.push_back(nj);
 
-         edge_features.push_back({
-         pair_deltaEta[idx],
-         pair_deltaPhi[idx],
-         pair_pt[idx],
-         pair_eta[idx],
-         dca[idx],
-         deltaR[idx],
-         dca_sig[idx],
-         cptopv[idx],
-         pvtoPCA_i[idx],
-         pvtoPCA_j[idx],
-         dotprod_i[idx],
-         dotprod_j[idx],
-         pair_mom[idx],
-         pair_invmass[idx]
-         });
+        // [0..13] = deltaR, deltaPhi, deltaEta, dca, dcaSig, cptopv,
+        // pvtoPCA1, pvtoPCA2, dotprod1, dotprod2, pairMom, pairInvMass,
+        // pt, eta.
+        std::vector<float> features = {
+            deltaR[idx],
+            pair_deltaPhi[idx],
+            pair_deltaEta[idx],
+            dca[idx],
+            dca_sig[idx],
+            cptopv[idx],
+            pvtoPCA_i[idx],
+            pvtoPCA_j[idx],
+            dotprod_i[idx],
+            dotprod_j[idx],
+            pair_mom[idx],
+            pair_invmass[idx],
+            pair_pt[idx],
+            pair_eta[idx],
+        };
+        // Match the HDF5 builder's per-component nonfinite replacement.
+        for (float& value : features) {
+            if (!std::isfinite(value)) value = 0.f;
+        }
+        edge_features.push_back(std::move(features));
      }
 
     if (track_features.empty() || edge_features.empty()) {
