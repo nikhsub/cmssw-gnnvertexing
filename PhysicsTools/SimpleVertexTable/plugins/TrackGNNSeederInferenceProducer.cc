@@ -25,6 +25,7 @@ using namespace cms::Ort;
 #include <limits>
 #include <array>
 #include <string>
+#include <sstream>
 #include "DataFormats/Common/interface/Wrapper.h"
 #include <vector>
 #include <algorithm>
@@ -444,9 +445,33 @@ void TrackGNNSeederInferenceProducer::produce(edm::Event& iEvent,const edm::Even
     };
     std::vector<std::vector<float>> data = {x_in_flat, edge_index_flat_f, edge_attr_flat};
     const auto output = globalCache()->run(input_names, data, input_shapes, output_names);
-    if (output.size() != 3 || output[0].size() != track_features.size() * N_NODE_CLASSES ||
-        output[1].size() != edge_i.size() || output[2].size() != track_features.size() * 128) {
-        throw cms::Exception("InvalidModelOutput") << "TrackGNNSeederInferenceProducer got unexpected output tensor count or length";
+    const size_t expectedNodeLogits = track_features.size() * N_NODE_CLASSES;
+    const size_t expectedEdgeLogits = edge_i.size();
+    const size_t expectedEmbeddings = track_features.size() * 128;
+    const bool outputSizesValid = output.size() == 3 && output[0].size() == expectedNodeLogits &&
+                                  output[1].size() == expectedEdgeLogits && output[2].size() == expectedEmbeddings;
+    if (!outputSizesValid) {
+        std::ostringstream details;
+        details << "TrackGNNSeederInferenceProducer output size mismatch: internalNodes=" << track_features.size()
+                << ", directedEdges=" << edge_i.size() << ", outputCount=" << output.size()
+                << ", expected element counts=[node_logits:" << expectedNodeLogits
+                << ", edge_logits:" << expectedEdgeLogits << ", node_embeddings:" << expectedEmbeddings << "]"
+                << ", actual element counts=[";
+        for (size_t i = 0; i < output.size(); ++i) {
+            if (i) details << ", ";
+            details << (i < output_names.size() ? output_names[i] : "unknown") << ":" << output[i].size();
+        }
+        details << "]";
+        for (const auto& name : output_names) {
+            const auto& shape = globalCache()->getOutputShape(name);
+            details << "; model " << name << " shape=[";
+            for (size_t dim = 0; dim < shape.size(); ++dim) {
+                if (dim) details << ",";
+                details << shape[dim];
+            }
+            details << "]";
+        }
+        throw cms::Exception("InvalidModelOutput") << details.str();
     }
 
     const auto& rawNodeLogits = output[0];
