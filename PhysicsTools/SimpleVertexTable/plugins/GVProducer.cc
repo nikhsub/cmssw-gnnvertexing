@@ -63,6 +63,7 @@ private:
     std::optional<std::tuple<float, float, float>> isAncestor(const reco::Candidate* mother,
                                                                 const reco::Candidate* daughter) const;
     bool hasHFAncestor(const reco::Candidate* hadron) const;
+    bool hasBAncestor(const reco::Candidate* hadron) const;
     bool hasHFDescendant(const reco::Candidate* hadron) const;
 
     edm::EDGetTokenT<edm::View<reco::Candidate>> genToken_;
@@ -111,7 +112,7 @@ void GVProducer::produce(edm::Event& iEvent, const edm::EventSetup&) {
     std::vector<float> Hadron_GVx_i, Hadron_GVy_i, Hadron_GVz_i;
     std::vector<int> Hadron_pdgId;
     std::vector<int> Hadron_pdgClass, Hadron_isB, Hadron_isD, Hadron_isTau;
-    std::vector<int> Hadron_fromHF, Hadron_toHF;
+    std::vector<int> Hadron_fromHF, Hadron_fromB, Hadron_toHF;
     std::vector<int> GV_nDaughters;
     std::vector<float> GV_maxDaughterPairDeltaR;
     std::vector<float> Daughters_pt, Daughters_eta, Daughters_phi;
@@ -203,6 +204,7 @@ void GVProducer::produce(edm::Event& iEvent, const edm::EventSetup&) {
             }
             if (hadPDG == 3) ngv_s++;
             Hadron_fromHF.push_back(hasHFAncestor(hadron) ? 1 : 0);
+            Hadron_fromB.push_back(hasBAncestor(hadron) ? 1 : 0);
             Hadron_toHF.push_back(hasHFDescendant(hadron) ? 1 : 0);
             GV_nDaughters.push_back(nPack);
 
@@ -298,6 +300,8 @@ void GVProducer::produce(edm::Event& iEvent, const edm::EventSetup&) {
     gvTable->addColumn<int>("isTau", Hadron_isTau, "isTau");
     gvTable->addColumn<int>("isD", Hadron_isD, "isD");
     gvTable->addColumn<int>("fromHF", Hadron_fromHF,"1 if an ancestor in the decay chain is itself an HF/long-lived hadron (B/D/S/Tau)");
+    gvTable->addColumn<int>("fromB", Hadron_fromB,
+                            "1 if a recognized bottom-hadron ancestor exists in the available generator mother chain");
     gvTable->addColumn<int>("toHF", Hadron_toHF,"1 if a descendant in the decay chain is itself an HF/long-lived hadron (B/D/S/Tau)");
     gvTable->addColumn<int>("pdgClass", Hadron_pdgId, "pdgClass");
     gvTable->addColumn<int>("nDaughters", GV_nDaughters,"Total number of GVDaughters belonging to this GV");
@@ -367,6 +371,27 @@ bool GVProducer::hasHFAncestor(const reco::Candidate* hadron) const {
             return true;
         }
         current = mother;
+    }
+    return false;
+}
+
+// hasBAncestor(): recognized bottom-hadron ancestry along the available
+// mother(0) chain only. This is deliberately separate from hasHFAncestor(),
+// whose category includes charm, strange hadrons, and taus.
+bool GVProducer::hasBAncestor(const reco::Candidate* hadron) const {
+    if (hadron == nullptr) return false;
+
+    const reco::Candidate* current = hadron;
+    std::unordered_set<const reco::Candidate*> visited;
+    constexpr size_t maxAncestryDepth = 10000;
+    size_t depth = 0;
+    while (current != nullptr && current->numberOfMothers() > 0 && depth < maxAncestryDepth) {
+        if (!visited.insert(current).second) break;  // malformed/cyclic ancestry
+        const reco::Candidate* mother = current->mother(0);
+        if (mother == nullptr || visited.find(mother) != visited.end()) break;
+        if (checkPDG(std::abs(mother->pdgId())) == 1) return true;
+        current = mother;
+        ++depth;
     }
     return false;
 }

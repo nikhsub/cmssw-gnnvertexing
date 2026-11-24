@@ -172,6 +172,26 @@ PF-to-seed or PF-to-SV compatibility, and other pairwise quantities offline.
 There is no jet axis, seed-centered truncation, seed-to-extra-track vertex fit,
 full-graph vertex fit, or duplicated per-seed PF collection in this output.
 
+## Generator truth: `GV_fromB`
+
+The MC `GV` table includes `GV_fromB`, aligned row-by-row with `GV_isB`,
+`GV_isD`, `GV_fromHF`, and `GV_Hadron_pdgId`.
+
+- `GV_fromB=1` means a recognized bottom-hadron species was found among the
+  available `mother(0)` ancestors of that accepted generator hadron.
+- `GV_fromB=0` means no such ancestor was found in the traversed chain; it does
+  not prove the full generator history is present.
+- For accepted charm hadrons, `GV_isD==1 && GV_fromB==0` is an operational
+  prompt-charm proxy, subject to the available ancestry and species coverage.
+- `GV_fromHF` remains unchanged and still includes its existing B/D/strange/tau
+  ancestor categories. It is not replaced by `GV_fromB`.
+
+`GV_fromB` reuses the B-hadron PDG list already used by `GVProducer::checkPDG`
+and does not expand that list. It follows only the first-mother chain, matching
+the audited implementation; null mothers, repeated ancestry pointers, and a
+10,000-link safety limit terminate traversal. Species absent from the existing
+list and ancestry omitted from the available generator record are not inferred.
+
 ## Commands and validation
 
 From a configured CMSSW release area:
@@ -221,3 +241,11 @@ python PhysicsTools/SimpleVertexTable/test/validate_trackGNN_downstream_context.
 
 The validator requires `uproot`, `awkward`, and NumPy. Runtime and CMSSW API
 compatibility must be confirmed in the target CMSSW_10_6_30 area.
+
+For the MC bottom-ancestry label and optional exact comparison of legacy truth
+branches to a pre-change file, run:
+
+```bash
+python PhysicsTools/SimpleVertexTable/test/validate_gv_from_b.py \
+  downstream_context_mc.root --baseline downstream_context_before_fromB.root
+```
