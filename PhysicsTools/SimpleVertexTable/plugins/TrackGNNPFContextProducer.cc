@@ -253,10 +253,16 @@ void TrackGNNPFContextProducer::produce(edm::Event& event, const edm::EventSetup
       impactValid = std::isfinite(dxyValue) && std::isfinite(dzValue);
       if (impactValid) impactReference = 0;  // both values are explicitly evaluated relative to MiniAOD PV0
     }
-    const float dxyErr = candidate.dxyError();
-    const float dzErr = candidate.dzError();
-    const bool impactErrorValid = hasDetails && std::isfinite(dxyErr) && std::isfinite(dzErr) &&
-                                  dxyErr >= 0.f && dzErr >= 0.f;
+    float dxyErr = kInvalid, dzErr = kInvalid;
+    bool impactErrorValid = false;
+    if (hasDetails) {
+      // PackedCandidate's impact-parameter errors unpack its covariance matrix,
+      // which is not stored for candidates without track details.
+      dxyErr = candidate.dxyError();
+      dzErr = candidate.dzError();
+      impactErrorValid = std::isfinite(dxyErr) && std::isfinite(dzErr) &&
+                         dxyErr >= 0.f && dzErr >= 0.f;
+    }
     ipValid.push_back(impactValid ? 1 : 0);
     ipErrorValid.push_back(impactErrorValid ? 1 : 0);
     ipReference.push_back(impactReference);
