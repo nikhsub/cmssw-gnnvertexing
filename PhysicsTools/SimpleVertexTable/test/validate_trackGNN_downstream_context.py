@@ -94,9 +94,9 @@ def validate(root_path, tree_name, baseline_path=None):
         "CtxSVConstituent_phi", "CtxSVConstituent_charge",
         "nSeed", "Seed_rank", "Seed_trk1Idx", "Seed_trk2Idx", "Seed_meanLogit", "Seed_score",
         "Seed_vtxFitValid", "Seed_vtxProb",
-        "nmyPV", "myPV_x", "myPV_y", "myPV_z",
+        "myPV_x", "myPV_y", "myPV_z",
         "nmySV", "mySV_nTracks", "mySV_nMappedTracks",
-        "nmySVtrks", "mySVtrks_SVidx", "mySVtrks_trk_trackIdx",
+        "nmySVtrks", "mySVtrks_trk_SVidx", "mySVtrks_trk_trackIdx",
         "mySVtrks_trk_sourceCollectionId", "mySVtrks_trk_sourceIdx",
     ]
     embedding_components = ["SeederEmbedding_emb%d" % i for i in range(128)]
@@ -232,10 +232,9 @@ def validate(root_path, tree_name, baseline_path=None):
                         require(all(math.isfinite(float(values[row])) for values in cov_values), errors,
                                 "event %s %s row %d: covariance marked valid but has nonfinite values" % (identity, prefix, row))
 
-            pv_count = int(scalar(arrays, "nmyPV", ev))
-            require(pv_count == (1 if npv > 0 else 0), errors,
-                    "event %s: standard myPV singleton count disagrees with CtxPV availability" % (identity,))
-            if npv and pv_count:
+            # myPV is a singleton FlatTable, so NanoAOD writes its columns
+            # directly and does not create an nmyPV count branch.
+            if npv:
                 for ctx_name, my_name in (("CtxPV_x", "myPV_x"), ("CtxPV_y", "myPV_y"), ("CtxPV_z", "myPV_z")):
                     ctx_value = float(event_values(arrays, ctx_name, ev)[0])
                     my_value = float(scalar(arrays, my_name, ev))
@@ -248,7 +247,7 @@ def validate(root_path, tree_name, baseline_path=None):
             n_my_sv_tracks = int(scalar(arrays, "nmySVtrks", ev))
             my_sv_ntracks = [int(x) for x in event_values(arrays, "mySV_nTracks", ev)]
             my_sv_nmapped = [int(x) for x in event_values(arrays, "mySV_nMappedTracks", ev)]
-            my_trk_sv = [int(x) for x in event_values(arrays, "mySVtrks_SVidx", ev)]
+            my_trk_sv = [int(x) for x in event_values(arrays, "mySVtrks_trk_SVidx", ev)]
             my_trk_idx = [int(x) for x in event_values(arrays, "mySVtrks_trk_trackIdx", ev)]
             my_trk_source_id = [int(x) for x in event_values(arrays, "mySVtrks_trk_sourceCollectionId", ev)]
             my_trk_source_idx = [int(x) for x in event_values(arrays, "mySVtrks_trk_sourceIdx", ev)]
